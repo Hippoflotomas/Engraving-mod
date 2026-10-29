@@ -25,12 +25,15 @@ See [docs/LANGUAGE.md](docs/LANGUAGE.md) for the full language.
 ### Carving in game
 
 1. Craft a **Chisel** at the workbench (2 wood, 4 flint) and equip it.
-2. Look at a carvable wall and press **E**. The side you're standing on is the side that gets carved.
+2. Look at a carvable wall and press **E** (Shift+E on doors and gates). The side you're standing on is the side that
+   gets carved; each side can carry its own carving.
 3. Write the carving; the preview updates as you type. **Carve** (or Ctrl+Enter) cuts it; each carving wears the chisel.
 
 Carvable pieces are set in the config (`CarvablePieces`, prefab names). `engrave_inspect` in the console shows the
 hovered piece's prefab name and whether a flat face was found on each side. `engrave_reload` re-reads charge images.
-Charge images: `Documents\ValheimHeraldryMod\Engravings`, then the heraldry mod's `Charges` beside it.
+Picture charges: with Heraldry Mod (API 3) installed, its charges, synced between players by fingerprint; then
+`Documents\ValheimHeraldryMod\Engravings` (local only); then, without Heraldry Mod, its `Charges` folder; then the
+game's item icons. See docs/LANGUAGE.md.
 
 ### Previewing without the game
 

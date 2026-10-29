@@ -74,7 +74,7 @@ namespace Engraving.Core.Geometry
                 return M.Min(Sdf.Polygon(x, y, head), Sdf.Box(x, y + 0.3f, 0.11f, 0.72f));
             }, 0.45f, 1f, "spear");
             Add("valknut", Valknut, "valknute");
-            Add("triskele", Fit(Triskele), "triskelion");
+            Add("triskele", Baked(Fit(Triskele)), "triskelion");
         }
 
         static void Add(string name, Func<float, float, float> f, params string[] aliases) => Add(name, f, 1, 1, aliases);
@@ -159,35 +159,119 @@ namespace Engraving.Core.Geometry
             return d;
         }
 
-        /// <summary>Measures a shape by sampling and rescales it so it is centred and fills [-1,1].</summary>
+        /// <summary>
+        /// For shapes that are slow to evaluate (many segments): the distance is worked out once on a grid over
+        /// [-1.6, 1.6], on first use, then read back with bilinear filtering. Beyond the grid, the distance from the
+        /// grid's edge is added on (shapes fit in [-1, 1], so that's far outside anything drawn).
+        /// 2026-10-29: the spiral triskele took a panel from 0.2 s to 3 s unbaked.
+        /// </summary>
+        static Func<float, float, float> Baked(Func<float, float, float> f, int res = 320)
+        {
+            const float Extent = 1.6f;
+            float[] grid = null;
+            object gate = new object();
+            return (x, y) =>
+            {
+                if (grid == null)
+                    lock (gate)
+                        if (grid == null)
+                        {
+                            var g = new float[res * res];
+                            for (int j = 0; j < res; j++)
+                                for (int i = 0; i < res; i++)
+                                    g[j * res + i] = f(-Extent + 2 * Extent * i / (res - 1), -Extent + 2 * Extent * j / (res - 1));
+                            grid = g;
+                        }
+                float cx = M.Clamp(x, -Extent, Extent), cy = M.Clamp(y, -Extent, Extent);
+                float outside = M.Len(x - cx, y - cy);
+                float fx = (cx + Extent) / (2 * Extent) * (res - 1), fy = (cy + Extent) / (2 * Extent) * (res - 1);
+                int ix = Math.Min((int)fx, res - 2), iy = Math.Min((int)fy, res - 2);
+                float tx = fx - ix, ty = fy - iy;
+                int o = iy * res + ix;
+                return M.Lerp(M.Lerp(grid[o], grid[o + 1], tx), M.Lerp(grid[o + res], grid[o + res + 1], tx), ty) + outside;
+            };
+        }
+
+        /// <summary>
+        /// Measures a shape by sampling and rescales it so it is centred and fills [-1,1]. The measuring happens on
+        /// first use, not when the shape table is built, so slow shapes don't delay every other shape.
+        /// </summary>
         static Func<float, float, float> Fit(Func<float, float, float> f, float margin = 0.97f)
         {
-            float minX = 9, maxX = -9, minY = 9, maxY = -9;
-            const int n = 200;
-            for (int j = 0; j < n; j++)
-                for (int i = 0; i < n; i++)
+            float cx = 0, cy = 0, half = 0;
+            bool measured = false;
+            object gate = new object();
+            return (x, y) =>
+            {
+                if (!measured)
+                    lock (gate)
+                        if (!measured)
+                        {
+                            float minX = 9, maxX = -9, minY = 9, maxY = -9;
+                            const int n = 160;
+                            for (int j = 0; j < n; j++)
+                                for (int i = 0; i < n; i++)
+                                {
+                                    float sx = -2 + 4f * (i + 0.5f) / n, sy = -2 + 4f * (j + 0.5f) / n;
+                                    if (f(sx, sy) > 0) continue;
+                                    minX = M.Min(minX, sx); maxX = M.Max(maxX, sx); minY = M.Min(minY, sy); maxY = M.Max(maxY, sy);
+                                }
+                            cx = (minX + maxX) / 2; cy = (minY + maxY) / 2;
+                            half = M.Max(maxX - minX, maxY - minY) / 2 / margin;
+                            measured = true;
+                        }
+                return f(x * half + cx, y * half + cy) / half;
+            };
+        }
+
+        /// <summary>
+        /// Triple spiral: three arms leave the centre, each sweeping out and curling inward around its own eye,
+        /// tapering to a point (Hippo, 2026-10-29: "the ends of the arms spiral around more and taper in").
+        /// Each arm is a polyline with a width per point; the distance is to the nearest swept circle.
+        /// </summary>
+        static readonly (float[] pts, float[] radius)[] TriskeleArms = MakeTriskele();
+
+        static (float[], float[])[] MakeTriskele()
+        {
+            const int N = 90;
+            const float Eye = 0.5f;          // distance from the centre to each arm's spiral eye
+            const float Turns = 1.35f;       // how far each arm curls round its eye
+            var arms = new (float[], float[])[3];
+            for (int k = 0; k < 3; k++)
+            {
+                float a = M.Pi / 2 + k * 2 * M.Pi / 3;
+                float px = Eye * M.Cos(a), py = Eye * M.Sin(a);
+                // the arm starts at the centre, so its first angle round the eye points back at the centre
+                float phi0 = (float)Math.Atan2(-py, -px);
+                var pts = new float[N * 2];
+                var rad = new float[N];
+                for (int i = 0; i < N; i++)
                 {
-                    float x = -2 + 4f * (i + 0.5f) / n, y = -2 + 4f * (j + 0.5f) / n;
-                    if (f(x, y) > 0) continue;
-                    minX = M.Min(minX, x); maxX = M.Max(maxX, x); minY = M.Min(minY, y); maxY = M.Max(maxY, y);
+                    float t = i / (float)(N - 1);
+                    float rho = Eye * (float)Math.Pow(1 - t, 1.15) + 0.02f * t;   // spirals in towards the eye
+                    float phi = phi0 - t * Turns * 2 * M.Pi;                       // the same way round for every arm
+                    pts[2 * i] = px + rho * M.Cos(phi);
+                    pts[2 * i + 1] = py + rho * M.Sin(phi);
+                    rad[i] = 0.115f * (float)Math.Pow(1 - t, 0.75) + 0.008f;         // tapers to a point
                 }
-            float cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
-            float half = M.Max(maxX - minX, maxY - minY) / 2 / margin;
-            return (x, y) => f(x * half + cx, y * half + cy) / half;
+                arms[k] = (pts, rad);
+            }
+            return arms;
         }
 
         static float Triskele(float x, float y)
         {
-            float d = Sdf.Circle(x, y, 0.16f);
-            for (int k = 0; k < 3; k++)
+            float d = Sdf.Circle(x, y, 0.13f);   // the hub where the arms meet
+            foreach (var (pts, rad) in TriskeleArms)
             {
-                float a = k * 2 * M.Pi / 3;
-                float c = M.Cos(-a), s = M.Sin(-a);
-                float u = x * c - y * s, v = x * s + y * c;
-                // spiral arm: a half ring leaving the centre
-                float arm = M.Abs(Sdf.Circle(u - 0.42f, v, 0.42f)) - 0.13f;
-                arm = M.Max(arm, -v);
-                d = M.Min(d, arm);
+                for (int i = 0; i + 1 < rad.Length; i++)
+                {
+                    float ax = pts[2 * i], ay = pts[2 * i + 1], bx = pts[2 * i + 2], by = pts[2 * i + 3];
+                    float abx = bx - ax, aby = by - ay;
+                    float h = M.Clamp01(((x - ax) * abx + (y - ay) * aby) / (abx * abx + aby * aby + 1e-12f));
+                    float dist = M.Len(x - ax - abx * h, y - ay - aby * h) - M.Lerp(rad[i], rad[i + 1], h);
+                    if (dist < d) d = dist;
+                }
             }
             return d;
         }

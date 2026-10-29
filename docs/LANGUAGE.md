@@ -95,16 +95,30 @@ each other (e.g. `center: a ring` then `center: a star, small`).
 | `flipped`, `mirrored`, `facing left` | Mirror left-right. |
 | `rotated N [left/right]`, `upside-down` | Rotate N degrees (left/anticlockwise by default). |
 
-**Names** are looked up in order: built-in shapes, then image folders: server-synced engravings,
-the `Engravings` folder, then the heraldry mod's `Charges` folder. Matching ignores case, spaces,
-hyphens and underscores, and plurals are folded (*wolves* → *wolf*, *axes* → *axe*).
+**Names** are looked up in order:
+
+1. built-in shapes (below);
+2. with **Heraldry Mod** installed (a version with API 3, the release after 1.5.0): its picture charges, by the usual heraldry rules (the server's
+   first, then your own, then downloaded). When a carving is made, the picture each name resolved to is recorded
+   with it (a hidden last line, `#charges: wolf=1a2b…`), so **every player carves the same picture**, and players
+   who don't have it yet get it the way heraldry fetches charges for arms;
+3. the `Engravings` folder (on your computer only: other players need the same file);
+4. without Heraldry Mod: the heraldry `Charges` folder;
+5. the game's **item icons**, by the item's name or prefab name: `a hammer`, `two bronze axes`, `a wolf trophy`.
+
+Matching ignores case, spaces, hyphens and underscores, and plurals are folded (*wolves* → *wolf*, *axes* → *axe*).
 
 Built-in shapes: `circle`, `ring`, `square`, `diamond`, `triangle`, `star`, `star6`, `star8`,
 `hexagon`, `octagon`, `cross`, `saltire-cross`, `crescent`/`moon`, `sun`, `heart`, `arrow`,
-`valknut`, `triskele`.
+`valknut`, `triskele` (a triple spiral).
 
 **Images:** PNGs with transparency use their alpha. Fully opaque images are read as dark-on-light
 artwork (black = charge), so scanned or hand-drawn engravings work as they are.
+
+## Sides
+
+Each side of a piece carries its own carving: the side you stand on when you open the carving window is the one you
+carve. Pieces that use E themselves (doors, gates) are carved with Shift+E.
 
 ## Panel size
 
@@ -113,5 +127,4 @@ artwork (black = charge), so scanned or hand-drawn engravings work as they are.
 ## Not built yet
 
 - Posable rigged figures (humanoid, quadruped, bird, serpent, dragon)
-- Game item icons as charges
 - Interior detail from image shading (only silhouettes are used so far)

@@ -6,13 +6,18 @@ using UnityEngine;
 namespace Engraving.Carving
 {
     /// <summary>
-    /// On every carvable build piece. The carving's script and which side it's on live in the piece's ZDO,
-    /// so every client draws the same carving from the text. With a chisel equipped, E opens the editor.
+    /// On every carvable build piece. Each side (piece-local +Z "front", -Z "back") can carry its own carving;
+    /// the scripts live in the piece's ZDO, so every client draws the same carvings from the text.
+    /// With a chisel equipped, E opens the editor on the side you're standing on; on pieces that use E
+    /// themselves (doors, gates) Shift+E does, as Heraldry Mod does for its tagged pieces.
     /// </summary>
     public class CarvedPiece : MonoBehaviour, Hoverable, Interactable
     {
-        public const string TextKey = "engraving_text";
-        public const string SideKey = "engraving_side";
+        public const string FrontKey = "engraving_text_front";
+        public const string BackKey = "engraving_text_back";
+        // before both sides could be carved (2026-10-29): one text and the side it was on
+        const string LegacyTextKey = "engraving_text";
+        const string LegacySideKey = "engraving_side";
         public const int MaxScriptLength = 2000;
 
         ZNetView _nview;
@@ -21,26 +26,32 @@ namespace Engraving.Carving
         uint _lastRevision = uint.MaxValue;
         int _lastGeneration = -1;
 
-        // what's currently shown
-        string _shownKey;
-        Carving _shown;
-        CarveModel _model;
-        /// <summary>Bumped on every Show/Clear, so late texture callbacks for an old carving are ignored.</summary>
-        int _token;
-        /// <summary>Faces whose renderer is switched off (worn/broken states); carved when they switch on.</summary>
-        readonly List<CarveFace> _waiting = new List<CarveFace>();
-        /// <summary>Faces with texture requests out, so they aren't asked for twice.</summary>
-        readonly HashSet<CarveFace> _started = new HashSet<CarveFace>();
-        readonly List<string> _textureKeys = new List<string>();
-        readonly List<(CarveFace face, Material carved, Material[] before)> _applied =
-            new List<(CarveFace, Material, Material[])>();
-
-        /// <summary>What happened last, for engrave_inspect.</summary>
-        internal string Status = "not carved";
-        internal bool Shown => _shownKey != null;
-
         /// <summary>Bumped when charges or settings change, so every piece redraws.</summary>
         internal static int Generation;
+
+        /// <summary>One side's carving: what's shown, and what's on its way.</summary>
+        sealed class Layer
+        {
+            public int Side;
+            public string Key;
+            public Carving Carving;
+            public CarveModel Model;
+            /// <summary>Bumped on every change, so late texture callbacks for an old carving are ignored.</summary>
+            public int Token;
+            /// <summary>Faces whose renderer is switched off (worn/broken states); textured when they switch on.</summary>
+            public readonly List<CarveFace> Waiting = new List<CarveFace>();
+            public readonly HashSet<MeshRenderer> Started = new HashSet<MeshRenderer>();
+            public readonly List<string> TextureKeys = new List<string>();
+            /// <summary>Faces with their textures ready, and the material made for each.</summary>
+            public readonly Dictionary<MeshRenderer, (CarveFace face, Material mat)> Ready = new Dictionary<MeshRenderer, (CarveFace, Material)>();
+            public string Status = "not carved";
+        }
+
+        readonly Layer _front = new Layer { Side = 1 }, _back = new Layer { Side = -1 };
+        /// <summary>Each touched renderer's own mesh and materials, to put back.</summary>
+        readonly Dictionary<MeshRenderer, (Mesh mesh, Material[] mats)> _originals = new Dictionary<MeshRenderer, (Mesh, Material[])>();
+
+        Layer LayerFor(int side) => side > 0 ? _front : _back;
 
         void Start()
         {
@@ -52,128 +63,198 @@ namespace Engraving.Carving
             InvokeRepeating(nameof(Refresh), 1f, 1f);
         }
 
-        void OnDestroy() => Clear();
+        void OnDestroy()
+        {
+            Clear(_front);
+            Clear(_back);
+        }
 
-        public string GetText() => _nview != null && _nview.IsValid() ? _nview.GetZDO().GetString(TextKey, "") : "";
-        public int GetSide() => _nview != null && _nview.IsValid() ? _nview.GetZDO().GetInt(SideKey, 1) : 1;
+        // ------------------------------------------------------------ the scripts
+
+        ZDO Zdo => _nview != null && _nview.IsValid() ? _nview.GetZDO() : null;
+
+        /// <summary>The carving script on a side ("" if none).</summary>
+        public string GetText(int side)
+        {
+            var zdo = Zdo;
+            if (zdo == null) return "";
+            string text = zdo.GetString(side > 0 ? FrontKey : BackKey, "");
+            if (text.Length == 0)
+            {
+                string legacy = zdo.GetString(LegacyTextKey, "");
+                if (legacy.Length > 0 && (zdo.GetInt(LegacySideKey, 1) > 0) == (side > 0)) text = legacy;
+            }
+            return text;
+        }
+
+        public bool IsCarved => GetText(1).Length > 0 || GetText(-1).Length > 0;
 
         /// <summary>Which side of the piece (piece-local ±Z) a world position is on.</summary>
         public int SideFacing(Vector3 worldPos) => transform.InverseTransformPoint(worldPos).z >= 0 ? 1 : -1;
 
-        /// <summary>The face that would be carved from where this point is, for the editor's preview size.</summary>
+        /// <summary>The face that would be carved on a side, for the editor's preview size.</summary>
         internal CarveModel ModelFor(int side) => CarveModel.For(gameObject, _prefab, side);
 
         internal bool CanEdit(bool flash) => PrivateArea.CheckAccess(transform.position, 0f, flash, false);
 
         public void SetCarving(string text, int side)
         {
-            if (_nview == null || !_nview.IsValid() || !CanEdit(true)) return;
+            var zdo = Zdo;
+            if (zdo == null || !CanEdit(true)) return;
             text = (text ?? "").Trim();
             if (text.Length > MaxScriptLength) text = text.Substring(0, MaxScriptLength);
             _nview.ClaimOwnership();
-            _nview.GetZDO().Set(TextKey, text);
-            _nview.GetZDO().Set(SideKey, side);
-            Jotunn.Logger.LogInfo($"[Engraving] Carving set on '{_prefab}' side {side}: {text.Length} characters.");
+            // move an old single-side carving to its own key first, so carving the other side keeps it
+            string legacy = zdo.GetString(LegacyTextKey, "");
+            if (legacy.Length > 0)
+            {
+                zdo.Set(zdo.GetInt(LegacySideKey, 1) > 0 ? FrontKey : BackKey, legacy);
+                zdo.Set(LegacyTextKey, "");
+            }
+            zdo.Set(side > 0 ? FrontKey : BackKey, text);
+            Jotunn.Logger.LogInfo($"[Engraving] Carving set on '{_prefab}' {(side > 0 ? "front" : "back")}: {text.Length} characters.");
             Refresh();
         }
 
+        // ------------------------------------------------------------ drawing
+
         void Refresh()
         {
-            var zdo = _nview != null && _nview.IsValid() ? _nview.GetZDO() : null;
+            var zdo = Zdo;
             if (zdo == null) return;
-            StartWaitingFaces();
+            StartWaitingFaces(_front);
+            StartWaitingFaces(_back);
             if (zdo.DataRevision == _lastRevision && _lastGeneration == Generation) return;
             _lastRevision = zdo.DataRevision;
             _lastGeneration = Generation;
+            Refresh(_front);
+            Refresh(_back);
+        }
 
-            string text = GetText();
-            int side = GetSide();
-            if (string.IsNullOrWhiteSpace(text)) { Clear(); Status = "not carved"; return; }
+        void Refresh(Layer layer)
+        {
+            int side = layer.Side;
+            string text = GetText(side);
+            if (string.IsNullOrWhiteSpace(text)) { Clear(layer); layer.Status = "not carved"; return; }
 
             var model = CarveModel.For(gameObject, _prefab, side);
-            if (model == null) { Clear(); Status = "no face on that side"; return; }
+            if (model == null) { Clear(layer); layer.Status = "no face on this side"; return; }
             float ppm = EngravingPlugin.PixelsPerMetre.Value;
-            string key = CarvingJobs.KeyFor(text, model.Width, model.Height, ppm) + "|" + side + "|" + EngravingPlugin.CarveDepth.Value;
-            if (key == _shownKey) return;
+            var pictures = HeraldryCharges.Prepare(text, out int waiting);
+            string icons = ItemIconCharges.Prepare(text, out int iconsWaiting);
+            string key = CarvingJobs.KeyFor(text, model.Width, model.Height, ppm) + "|" + side + "|" +
+                         EngravingPlugin.CarveDepth.Value + "|" + EngravingPlugin.AlbedoMaxSize.Value + "|" +
+                         HeraldryCharges.KeyOf(pictures) + "|" + icons;
+            if (key == layer.Key) return;
 
-            Status = "drawing";
-            CarvingJobs.Request(text, model.Width, model.Height, ppm, carving =>
+            layer.Status = "drawing" + (waiting > 0 ? $" ({waiting} picture(s) still to come from Heraldry Mod)" : "") +
+                           (iconsWaiting > 0 ? $" ({iconsWaiting} item icon(s) reading)" : "");
+            int token = ++layer.Token;
+            CarvingJobs.Request(text, model.Width, model.Height, ppm, pictures, carving =>
             {
-                if (this == null) return;
+                if (this == null || token != layer.Token) return;
                 if (carving.Map == null)
                 {
-                    Status = "drawing failed: " + string.Join("; ", carving.Diagnostics.Select(d => d.Message));
-                    Jotunn.Logger.LogWarning($"[Engraving] '{_prefab}': {Status}");
+                    layer.Status = "drawing failed: " + string.Join("; ", carving.Diagnostics.Select(d => d.Message));
+                    Jotunn.Logger.LogWarning($"[Engraving] '{_prefab}': {layer.Status}");
                     return;
                 }
                 // the text may have changed again while this was drawing
-                if (GetText() != text || GetSide() != side) return;
-                try { Show(carving, model, key); }
+                if (GetText(side) != text) return;
+                try { Show(layer, carving, model, key); }
                 catch (System.Exception e)
                 {
-                    Status = "applying failed: " + e.Message;
+                    layer.Status = "applying failed: " + e.Message;
                     Jotunn.Logger.LogWarning($"[Engraving] '{_prefab}': couldn't apply the carving: {e}");
                 }
             });
         }
 
-        void Show(Carving carving, CarveModel model, string key)
+        void Show(Layer layer, Carving carving, CarveModel model, string key)
         {
-            Clear();
-            _model = model;
-            _shown = carving;
-            _shownKey = key;
+            Clear(layer);
+            layer.Model = model;
+            layer.Carving = carving;
+            layer.Key = key;
             // only what can be seen now; the worn and broken models wait until the wall switches to them
             foreach (var face in model.Faces)
             {
                 if (face.Renderer == null) continue;
-                if (face.Renderer.gameObject.activeInHierarchy) StartFace(face);
-                else _waiting.Add(face);
+                if (face.Renderer.gameObject.activeInHierarchy) StartFace(layer, face);
+                else layer.Waiting.Add(face);
             }
-            Status = $"texturing {_started.Count} renderer(s), {_waiting.Count} waiting (hidden); drawn in {carving.Millis} ms";
+            UpdateStatus(layer);
         }
 
-        void StartWaitingFaces()
+        void StartWaitingFaces(Layer layer)
         {
-            if (_waiting.Count == 0 || _shown == null) return;
-            for (int i = _waiting.Count - 1; i >= 0; i--)
+            if (layer.Waiting.Count == 0 || layer.Carving == null) return;
+            for (int i = layer.Waiting.Count - 1; i >= 0; i--)
             {
-                var face = _waiting[i];
-                if (face.Renderer == null) { _waiting.RemoveAt(i); continue; }
+                var face = layer.Waiting[i];
+                if (face.Renderer == null) { layer.Waiting.RemoveAt(i); continue; }
                 if (!face.Renderer.gameObject.activeInHierarchy) continue;
-                _waiting.RemoveAt(i);
-                StartFace(face);
+                layer.Waiting.RemoveAt(i);
+                StartFace(layer, face);
             }
         }
 
-        /// <summary>Asks for this face's textures; the mesh and material change together once both exist.</summary>
-        void StartFace(CarveFace face)
+        /// <summary>Asks for this face's textures; the renderer is redone once both exist.</summary>
+        void StartFace(Layer layer, CarveFace face)
         {
-            if (!_started.Add(face)) return;
             var r = face.Renderer;
-            var before = r.sharedMaterials;
-            var source = face.SourceSlot < before.Length ? before[face.SourceSlot] : before.FirstOrDefault();
-            int token = _token;
-            var carving = _shown;
+            if (!layer.Started.Add(r)) return;
+            var own = Original(r).mats;
+            var source = face.SourceSlot < own.Length ? own[face.SourceSlot] : own.FirstOrDefault();
+            int token = layer.Token;
+            var carving = layer.Carving;
             Texture2D normal = null, albedo = null;
 
             void Ready()
             {
-                if (this == null || token != _token || normal == null || albedo == null || r == null) return;
-                var mat = MakeMaterial(source, albedo, normal);
-                // the carved mesh has one more submesh: the face
-                var now = r.sharedMaterials;
-                var mats = new Material[face.FaceSlot + 1];
-                for (int i = 0; i < mats.Length; i++) mats[i] = i < now.Length ? now[i] : source;
-                mats[face.FaceSlot] = mat;
-                r.GetComponent<MeshFilter>().sharedMesh = face.Carved;
-                r.sharedMaterials = mats;
-                _applied.Add((face, mat, before));
-                Status = $"shown on {_applied.Count} renderer(s), {_waiting.Count} waiting (hidden); drawn in {carving.Millis} ms";
+                if (this == null || token != layer.Token || normal == null || albedo == null || r == null) return;
+                layer.Ready[r] = (face, MakeMaterial(source, albedo, normal));
+                Apply(r);
+                UpdateStatus(layer);
             }
 
-            _textureKeys.Add(CarvingTextures.AcquireNormal(carving, EngravingPlugin.CarveDepth.Value, t => { normal = t; Ready(); }));
-            _textureKeys.Add(CarvingTextures.AcquireAlbedo(carving, source, face, t => { albedo = t; Ready(); }));
+            layer.TextureKeys.Add(CarvingTextures.AcquireNormal(carving, EngravingPlugin.CarveDepth.Value, t => { normal = t; Ready(); }));
+            layer.TextureKeys.Add(CarvingTextures.AcquireAlbedo(carving, source, face, t => { albedo = t; Ready(); }));
+        }
+
+        (Mesh mesh, Material[] mats) Original(MeshRenderer r)
+        {
+            if (!_originals.TryGetValue(r, out var o))
+            {
+                o = (r.GetComponent<MeshFilter>().sharedMesh, r.sharedMaterials);
+                _originals[r] = o;
+            }
+            return o;
+        }
+
+        /// <summary>Gives a renderer the mesh and materials for whichever sides are carved and ready on it.</summary>
+        void Apply(MeshRenderer r)
+        {
+            if (r == null) return;
+            var original = Original(r);
+            var ready = new List<(CarveFace face, Material mat)>();
+            if (_front.Ready.TryGetValue(r, out var f)) ready.Add(f);
+            if (_back.Ready.TryGetValue(r, out var b)) ready.Add(b);
+            var filter = r.GetComponent<MeshFilter>();
+            if (ready.Count == 0)
+            {
+                filter.sharedMesh = original.mesh;
+                r.sharedMaterials = original.mats;
+                _originals.Remove(r);
+                return;
+            }
+            var variant = CarvedMeshes.For(ready.Select(x => x.face).ToList());
+            int count = variant.SlotOf.Values.Max() + 1;
+            var mats = new Material[count];
+            for (int i = 0; i < count; i++) mats[i] = i < original.mats.Length ? original.mats[i] : original.mats.LastOrDefault();
+            foreach (var (face, mat) in ready) mats[variant.SlotOf[face.Side]] = mat;
+            filter.sharedMesh = variant.Mesh;
+            r.sharedMaterials = mats;
         }
 
         static Material MakeMaterial(Material source, Texture2D albedo, Texture2D normal)
@@ -197,27 +278,34 @@ namespace Engraving.Carving
             return m;
         }
 
-        void Clear()
+        void Clear(Layer layer)
         {
-            _token++;
-            foreach (var (face, carved, before) in _applied)
-            {
-                if (face.Renderer != null)
-                {
-                    var filter = face.Renderer.GetComponent<MeshFilter>();
-                    if (filter != null) filter.sharedMesh = face.Original;
-                    face.Renderer.sharedMaterials = before;
-                }
-                if (carved != null) Destroy(carved);
-            }
-            foreach (var k in _textureKeys) CarvingTextures.Release(k);
-            _textureKeys.Clear();
-            _applied.Clear();
-            _waiting.Clear();
-            _started.Clear();
-            _shown = null;
-            _shownKey = null;
-            _model = null;
+            layer.Token++;
+            var touched = layer.Ready.Keys.ToList();
+            foreach (var (_, mat) in layer.Ready.Values) if (mat != null) Destroy(mat);
+            layer.Ready.Clear();
+            foreach (var r in touched) Apply(r);   // back to the other side's carving, or the original
+            foreach (var k in layer.TextureKeys) CarvingTextures.Release(k);
+            layer.TextureKeys.Clear();
+            layer.Waiting.Clear();
+            layer.Started.Clear();
+            layer.Carving = null;
+            layer.Key = null;
+            layer.Model = null;
+        }
+
+        void UpdateStatus(Layer layer)
+        {
+            layer.Status = $"shown on {layer.Ready.Count} renderer(s), {layer.Started.Count - layer.Ready.Count} texturing, " +
+                           $"{layer.Waiting.Count} waiting (hidden); drawn in {layer.Carving?.Millis ?? 0} ms";
+        }
+
+        /// <summary>For engrave_inspect.</summary>
+        internal string Describe(int side)
+        {
+            var layer = LayerFor(side);
+            string text = GetText(side);
+            return (text.Length == 0 ? "none" : $"{text.Length} chars") + $"; {layer.Status}";
         }
 
         // ------------------------------------------------------------ hover and E
@@ -229,9 +317,9 @@ namespace Engraving.Carving
             if (_nview == null || !_nview.IsValid()) return "";
             var player = Player.m_localPlayer;
             if (player == null || !Chisel.IsEquipped(player)) return "";
-            string state = string.IsNullOrWhiteSpace(GetText()) ? "" : "\n<i>carved</i>";
+            string state = IsCarved ? "\n<i>carved</i>" : "";
             if (!CanEdit(false)) return Localization.instance.Localize($"{DisplayName()}{state}\n$piece_noaccess");
-            return Localization.instance.Localize($"{DisplayName()}{state}\n[<color=yellow><b>$KEY_Use</b></color>] Carve");
+            return Localization.instance.Localize($"{DisplayName()}{state}\n[<color=yellow><b>$KEY_Use</b></color>] Carve this side");
         }
 
         public string GetHoverName() => DisplayName();
@@ -241,7 +329,12 @@ namespace Engraving.Carving
         public bool Interact(Humanoid user, bool hold, bool alt)
         {
             if (hold || user != Player.m_localPlayer) return false;
-            var player = (Player)user;
+            return OpenEditor((Player)user);
+        }
+
+        /// <summary>Opens the carving window on the side the player stands on, if they hold a chisel.</summary>
+        internal bool OpenEditor(Player player)
+        {
             if (!Chisel.IsEquipped(player)) return false;
             if (!CanEdit(true)) return true;
             UI.CarvingEditor.Open(this, SideFacing(player.transform.position));
@@ -249,6 +342,18 @@ namespace Engraving.Carving
         }
 
         public bool UseItem(Humanoid user, ItemDrop.ItemData item) => false;
+
+        /// <summary>True if the piece answers E itself (a door, a gate): then Shift+E carves.</summary>
+        internal bool HasOwnInteraction()
+        {
+            if (_ownInteraction.HasValue) return _ownInteraction.Value;
+            bool own = GetComponentsInParent<Interactable>(true).Concat(GetComponentsInChildren<Interactable>(true))
+                .Any(i => !ReferenceEquals(i, this));
+            _ownInteraction = own;
+            return own;
+        }
+
+        bool? _ownInteraction;
 
         // ------------------------------------------------------------ which pieces
 
@@ -278,6 +383,33 @@ namespace Engraving.Carving
             var go = __instance.gameObject;
             if (go.GetComponent<CarvedPiece>() != null) return;
             if (CarvedPiece.IsCarvable(Utils.GetPrefabName(go))) go.AddComponent<CarvedPiece>();
+        }
+
+        /// <summary>Shift+E (the game's alternative use) with a chisel equipped carves, even on pieces that use E themselves.</summary>
+        [HarmonyPatch(typeof(Player), "Interact", typeof(GameObject), typeof(bool), typeof(bool))]
+        [HarmonyPrefix]
+        static bool AltUse(Player __instance, GameObject __0, bool __1, bool __2) // (go, hold, alt), by position
+        {
+            if (!__2 || __1 || __0 == null || __instance != Player.m_localPlayer) return true;
+            var piece = __0.GetComponentInParent<CarvedPiece>();
+            if (piece == null || !Chisel.IsEquipped(__instance)) return true;
+            piece.OpenEditor(__instance);
+            return false;
+        }
+
+        /// <summary>The carving hint under a door's or gate's own hover text, when E belongs to the piece.</summary>
+        [HarmonyPatch(typeof(Hud), "UpdateCrosshair")]
+        [HarmonyPostfix]
+        static void Hint(Hud __instance, Player __0) // the hovering player, by position
+        {
+            var player = __0;
+            if (player == null || !Chisel.IsEquipped(player)) return;
+            var piece = player.GetHoverObject()?.GetComponentInParent<CarvedPiece>();
+            if (piece == null || !piece.HasOwnInteraction()) return;
+            var label = __instance.m_hoverName;
+            if (label == null || string.IsNullOrEmpty(label.text) || label.text.Contains("Carve")) return;
+            label.text += "\n[<color=yellow><b>Shift+$KEY_Use</b></color>] Carve this side";
+            label.text = Localization.instance.Localize(label.text);
         }
     }
 }

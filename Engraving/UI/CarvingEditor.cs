@@ -118,15 +118,11 @@ namespace Engraving.UI
                 return;
             }
 
-            // a carving on the other side is replaced when this side is carved
-            bool sameSide = piece.GetSide() == side;
-            _original = sameSide ? piece.GetText() : "";
-            _title.text = $"Carve: {Localization.instance.Localize(piece.GetHoverName())}";
+            _original = HeraldryCharges.Visible(piece.GetText(side));
+            string sideName = side > 0 ? "front" : "back";
+            _title.text = $"Carve: {Localization.instance.Localize(piece.GetHoverName())} ({sideName})";
             _input.text = _original;
-            if (!sameSide && piece.GetText().Length > 0)
-                _status.text = "<color=#ffcc40>The other side is carved; carving this side smooths that one.</color>";
-            else
-                _status.text = "";
+            _status.text = HeraldryCharges.Visible(piece.GetText(-side)).Length > 0 ? $"<color=#a0a0a0>The {(side > 0 ? "back" : "front")} is carved too.</color>" : "";
             _status.supportRichText = true;
 
             // preview box shaped like the face
@@ -159,14 +155,14 @@ namespace Engraving.UI
             if (_target == null) return;
             string text = (_input.text ?? "").Trim();
             var player = Player.m_localPlayer;
-            bool changed = text != (_original ?? "").Trim() || _target.GetSide() != _side;
+            bool changed = text != (_original ?? "").Trim();
             if (changed)
             {
                 if (player == null || !Chisel.IsEquipped(player)) { _status.text = "Equip your chisel to carve."; return; }
                 var parsed = Parser.Parse(text);
                 if (parsed.HasErrors) { _status.text = "<color=#ff8060>Fix the problems first.</color>"; return; }
                 if (text.Length > 0 && !Chisel.Wear(player)) { _status.text = "Your chisel is too blunt."; return; }
-                _target.SetCarving(text, _side);
+                _target.SetCarving(HeraldryCharges.WithFingerprints(text), _side);
             }
             Hide();
         }
@@ -206,13 +202,20 @@ namespace Engraving.UI
                 _renderAt = -1;
                 string text = _input.text ?? "";
                 _previewWanted = text;
-                CarvingJobs.Request(text, _model.Width, _model.Height, PreviewPpm, c =>
+                var pictures = HeraldryCharges.Prepare(text, out int waiting);
+                ItemIconCharges.Prepare(text, out int iconsWaiting);
+                // item icons read back in a frame or two: look again then
+                if (iconsWaiting > 0) _renderAt = Time.unscaledTime + 0.3f;
+                CarvingJobs.Request(text, _model.Width, _model.Height, PreviewPpm, pictures, c =>
                 {
                     if (!IsOpen || _previewWanted != text || c.Map == null) return;
                     CarvingTextures.Preview(c, _previewTex);
                     _preview.texture = _previewTex;
                     var parsed = Parser.Parse(text);
-                    ShowProblems(parsed.Diagnostics, c.Diagnostics.Where(d => !parsed.Diagnostics.Any(p => p.Message == d.Message)));
+                    var render = c.Diagnostics.Where(d => !parsed.Diagnostics.Any(p => p.Message == d.Message)).ToList();
+                    if (waiting > 0)
+                        render.Insert(0, new Diagnostic(Severity.Warning, 0, $"{waiting} picture(s) not on this computer yet; Heraldry Mod is fetching them (or see heraldry_get)"));
+                    ShowProblems(parsed.Diagnostics, render);
                 });
             }
         }

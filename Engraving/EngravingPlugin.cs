@@ -18,6 +18,7 @@ namespace Engraving
 {
     [BepInPlugin(PluginGUID, PluginName, PluginVersion)]
     [BepInDependency(Jotunn.Main.ModGuid)]
+    [BepInDependency("com.hippotech.valheimheraldrymod", BepInDependency.DependencyFlags.SoftDependency)]
     //[NetworkCompatibility(CompatibilityLevel.EveryoneMustHaveMod, VersionStrictness.Minor)]
     internal class EngravingPlugin : BaseUnityPlugin
     {
@@ -35,6 +36,7 @@ namespace Engraving
         public static ConfigEntry<string> HeraldryFolder;
         public static ConfigEntry<int> PixelsPerMetre;
         public static ConfigEntry<float> CarveDepth;
+        public static ConfigEntry<int> AlbedoMaxSize;
         public static ConfigEntry<string> CarvablePieces;
         public static ConfigEntry<float> ChiselDurability;
         public static ConfigEntry<float> ChiselWearPerCarving;
@@ -53,8 +55,12 @@ namespace Engraving
             CarveDepth = Config.Bind("Rendering", "CarveDepth", 0.025f,
                 new ConfigDescription("How deep the deepest cut looks, in metres. Raises or lowers the relief of every carving.",
                     new AcceptableValueRange<float>(0.002f, 0.1f)));
+            AlbedoMaxSize = Config.Bind("Rendering", "ColourTextureMaxSize", 1024,
+                new ConfigDescription("Largest size of a carving's colour texture. It follows the wall's own texture detail up to this; " +
+                                      "higher is sharper but uses more video memory (1024 x 1024 is about 5 MB per distinct carving).",
+                    new AcceptableValueList<int>(512, 1024, 2048)));
             CarvablePieces = Config.Bind("Pieces", "CarvablePieces",
-                "woodwall,wood_wall_half,wood_wall_quarter,stone_wall_1x1,stone_wall_2x1,stone_wall_4x2",
+                "woodwall,wood_wall_half,wood_wall_quarter,stone_wall_1x1,stone_wall_2x1,stone_wall_4x2,wood_door,wood_gate",
                 "Build pieces that can be carved (prefab names, comma separated). Hover a piece and run 'engrave_inspect' to see its name.");
             ChiselDurability = Config.Bind("Chisel", "Durability", 200f, "Chisel durability at quality 1.");
             ChiselWearPerCarving = Config.Bind("Chisel", "WearPerCarving", 10f, "Durability a chisel loses each time you carve or recarve a piece.");
@@ -62,6 +68,7 @@ namespace Engraving
             CarvablePieces.SettingChanged += (_, __) => CarvedPiece.ReloadCarvable();
             PixelsPerMetre.SettingChanged += (_, __) => CarvedPiece.Generation++;
             CarveDepth.SettingChanged += (_, __) => CarvedPiece.Generation++;
+            AlbedoMaxSize.SettingChanged += (_, __) => CarvedPiece.Generation++;
 
             BuildChargeLibrary();
             Chisel.Register();
@@ -71,10 +78,24 @@ namespace Engraving
             CommandManager.Instance.AddConsoleCommand(new EngraveFileCommand());
             CommandManager.Instance.AddConsoleCommand(new EngraveInspectCommand());
             CommandManager.Instance.AddConsoleCommand(new EngraveReloadCommand());
-            Jotunn.Logger.LogInfo($"{PluginName} {PluginVersion} loaded; charge folders: {string.Join(", ", ChargeFolders())}");
+            Jotunn.Logger.LogInfo($"{PluginName} {PluginVersion} loaded; charge folders: {string.Join(", ", ChargeFolders())}; " +
+                                  (HeraldryCharges.Available ? "picture charges through Heraldry Mod (API " + HeraldryBridge.ApiVersion + ")" :
+                                   HeraldryBridge.Available ? "Heraldry Mod is too old for picture charges (API " + HeraldryBridge.ApiVersion + ", needs 3)" : "no Heraldry Mod"));
         }
 
-        private void Update() => CarvingJobs.Pump();
+        private void Update()
+        {
+            CarvingJobs.Pump();
+            // a picture arrived from (or was blocked in) Heraldry Mod, or an item icon was read: redraw what uses it
+            bool iconsArrived = ItemIconCharges.Changed;
+            ItemIconCharges.Changed = false;
+            if (HeraldryCharges.Poll() | iconsArrived)
+            {
+                lock (Charges) Charges.ClearCache();
+                CarvingJobs.SetLibrary(Charges);
+                CarvedPiece.Generation++;
+            }
+        }
 
         private void OnDestroy() => _harmony?.UnpatchSelf();
 
@@ -93,7 +114,13 @@ namespace Engraving
             var folders = ChargeFolders();
             try { Directory.CreateDirectory(folders[0]); }
             catch (Exception e) { Jotunn.Logger.LogWarning($"can't create {folders[0]}: {e.Message}"); }
-            foreach (var dir in folders) Charges.AddSource(new FolderChargeSource(dir));
+            // Engravings first; then Heraldry Mod's pictures (synced between players) if it's installed, else the
+            // heraldry Charges folder read directly
+            Charges.AddSource(new FolderChargeSource(folders[0]));
+            Charges.AddSource(new HeraldryCharges.Source());
+            Charges.AddSource(new UnlessHeraldry(new FolderChargeSource(folders[1])));
+            // last resort: the game's item icons ("a hammer")
+            Charges.AddSource(new ItemIconCharges.Source());
             CarvingJobs.SetLibrary(Charges);
             CarvedPiece.Generation++;
         }
@@ -104,6 +131,18 @@ namespace Engraving
             parsed = Parser.Parse(script);
             var opt = new RenderOptions { Width = width, Height = height, PixelsPerMetre = PixelsPerMetre.Value };
             lock (Charges) return EngravingRenderer.Render(parsed.Spec, Charges, opt);
+        }
+    }
+
+    /// <summary>A charge source used only when Heraldry Mod isn't there to serve the same pictures.</summary>
+    internal sealed class UnlessHeraldry : IChargeSource
+    {
+        readonly IChargeSource _inner;
+        public UnlessHeraldry(IChargeSource inner) { _inner = inner; }
+        public bool TryGetMask(string normalisedName, out Engraving.Core.Geometry.AlphaMask mask)
+        {
+            mask = null;
+            return !HeraldryCharges.Available && _inner.TryGetMask(normalisedName, out mask);
         }
     }
 
@@ -175,9 +214,8 @@ namespace Engraving
             var carved = piece.GetComponent<CarvedPiece>();
             if (carved != null)
             {
-                string text = carved.GetText();
-                c.Print($"  carving: {(text.Length == 0 ? "none" : $"{text.Length} chars on side {(carved.GetSide() > 0 ? "+Z" : "-Z")}")}; " +
-                        $"status: {carved.Status}; shown: {carved.Shown}");
+                c.Print($"  front: {carved.Describe(1)}");
+                c.Print($"  back: {carved.Describe(-1)}");
                 foreach (var r in piece.GetComponentsInChildren<MeshRenderer>(true))
                 {
                     var mesh = r.GetComponent<MeshFilter>()?.sharedMesh;

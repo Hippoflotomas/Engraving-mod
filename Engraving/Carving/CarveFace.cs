@@ -6,22 +6,121 @@ using UnityEngine;
 namespace Engraving.Carving
 {
     /// <summary>
-    /// The carvable face of one renderer: the triangles on the outermost plane of the piece on one side
-    /// (piece-local +Z or -Z), and a copy of the mesh with those triangles moved to their own submesh with
-    /// flat UVs (0..1 across the whole face as seen from that side).
+    /// The carvable face of one renderer on one side (piece-local +Z or -Z): the triangles facing that way in
+    /// the front half of the piece, with flat UVs (0..1 across the whole face as seen from that side). Meshes
+    /// showing one or both sides carved are built by <see cref="CarvedMeshes"/>.
     /// </summary>
     internal sealed class CarveFace
     {
         public MeshRenderer Renderer;
         public Mesh Original;
-        public Mesh Carved;
+        public int Side;
         /// <summary>Material slot the face triangles came from (the one most of them used).</summary>
         public int SourceSlot;
-        /// <summary>The new submesh index holding the face.</summary>
-        public int FaceSlot;
-        /// <summary>Least-squares map from face UV (u, v, 1) to the original UV0, so the wall's own texture can be resampled.</summary>
+        /// <summary>Least-squares map from face UV (u, v, 1) to the original UV0: the fallback where no triangle covers a texel.</summary>
         public Vector3 MapU, MapV;
         public int Triangles;
+        /// <summary>The face's triangles as vertex indices into the original mesh.</summary>
+        public int[] FaceTris;
+        /// <summary>The original mesh's data (shared by every wall of the prefab).</summary>
+        public MeshSnapshot Snap;
+        /// <summary>
+        /// Per face triangle: its corners in face UV (6 floats), the same corners' original UVs (6 floats) and its
+        /// depth towards the viewer (1 float). Lets the wall's texture be resampled exactly, island by island
+        /// (2026-10-29: one affine map smeared and striped stone_wall_4x2, whose texture is a patchwork).
+        /// </summary>
+        public float[] TriFaceUV, TriOrigUV, TriDepth;
+
+        public CarveFace BoundTo(MeshRenderer r)
+        {
+            var f = (CarveFace)MemberwiseClone();
+            f.Renderer = r;
+            return f;
+        }
+    }
+
+    /// <summary>
+    /// The meshes a carved renderer shows: the original with the carved sides' triangles taken out of their
+    /// submeshes and put in one extra submesh each (front first, then back), on their own vertices with face UVs.
+    /// Cached per original mesh and set of sides, so every wall of a prefab shares them.
+    /// </summary>
+    internal static class CarvedMeshes
+    {
+        public sealed class Variant
+        {
+            public Mesh Mesh;
+            /// <summary>Submesh index of each carved side's face, by side (+1, -1).</summary>
+            public readonly Dictionary<int, int> SlotOf = new Dictionary<int, int>();
+        }
+
+        static readonly Dictionary<string, Variant> Cache = new Dictionary<string, Variant>();
+
+        public static Variant For(IList<CarveFace> faces)
+        {
+            var ordered = faces.OrderByDescending(f => f.Side).ToList();
+            var first = ordered[0];
+            string key = first.Original.GetInstanceID() + "|" + string.Join(",", ordered.Select(f => f.Side + ":" +
+                System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(f.FaceTris)));
+            if (Cache.TryGetValue(key, out var v)) return v;
+
+            var s = first.Snap;
+            bool haveNormals = s.Normals != null && s.Normals.Length == s.Vertices.Length;
+            bool haveUvs = s.Uvs != null && s.Uvs.Length == s.Vertices.Length;
+            var verts = new List<Vector3>(s.Vertices);
+            var norms = haveNormals ? new List<Vector3>(s.Normals) : null;
+            var uvs = new List<Vector2>(haveUvs ? s.Uvs : new Vector2[s.Vertices.Length]);
+
+            var carved = new HashSet<long>();
+            foreach (var f in ordered)
+                for (int i = 0; i + 2 < f.FaceTris.Length; i += 3) carved.Add(TriKey(f.FaceTris[i], f.FaceTris[i + 1], f.FaceTris[i + 2]));
+            var subs = new List<int[]>();
+            foreach (var t in s.SubMeshTriangles)
+            {
+                var keep = new List<int>(t.Length);
+                for (int i = 0; i + 2 < t.Length; i += 3)
+                    if (!carved.Contains(TriKey(t[i], t[i + 1], t[i + 2]))) { keep.Add(t[i]); keep.Add(t[i + 1]); keep.Add(t[i + 2]); }
+                subs.Add(keep.ToArray());
+            }
+
+            v = new Variant();
+            foreach (var f in ordered)
+            {
+                // the face on its own copies of the vertices (three per triangle), carrying face UVs
+                var idx = new int[f.FaceTris.Length];
+                for (int k = 0; k < f.FaceTris.Length; k++)
+                {
+                    int i = f.FaceTris[k];
+                    idx[k] = verts.Count;
+                    verts.Add(s.Vertices[i]);
+                    if (haveNormals) norms.Add(s.Normals[i]);
+                    uvs.Add(new Vector2(f.TriFaceUV[k * 2], f.TriFaceUV[k * 2 + 1]));
+                }
+                v.SlotOf[f.Side] = subs.Count;
+                subs.Add(idx);
+            }
+
+            var m = new Mesh { indexFormat = verts.Count > 65000 ? UnityEngine.Rendering.IndexFormat.UInt32 : UnityEngine.Rendering.IndexFormat.UInt16 };
+            m.name = first.Original.name + "_carved" + string.Join("", ordered.Select(f => f.Side > 0 ? "F" : "B"));
+            m.SetVertices(verts);
+            if (haveNormals) m.SetNormals(norms);
+            m.SetUVs(0, uvs);
+            m.subMeshCount = subs.Count;
+            for (int i = 0; i < subs.Count; i++) m.SetTriangles(subs[i], i);
+            if (!haveNormals) m.RecalculateNormals();
+            m.RecalculateBounds();
+            m.RecalculateTangents();
+            m.UploadMeshData(true);
+            v.Mesh = m;
+            Cache[key] = v;
+            return v;
+        }
+
+        static long TriKey(int a, int b, int c)
+        {
+            // order-independent key for a triangle
+            int lo = Math.Min(a, Math.Min(b, c)), hi = Math.Max(a, Math.Max(b, c)), mid = a + b + c - lo - hi;
+            return ((long)lo * 1000003L + mid) * 1000003L + hi;
+        }
     }
 
     /// <summary>All carvable faces of a piece on one side, sharing one face rectangle.</summary>
@@ -97,15 +196,7 @@ namespace Engraving.Carving
             var bound = new CarveModel { Side = Side, Bounds = Bounds, Note = Note };
             var byPath = root.GetComponentsInChildren<MeshRenderer>(true).ToDictionary(r => PathOf(r.transform, root.transform), r => r);
             for (int i = 0; i < Faces.Count; i++)
-            {
-                if (!byPath.TryGetValue(_paths[i], out var r)) continue;
-                var f = Faces[i];
-                bound.Faces.Add(new CarveFace
-                {
-                    Renderer = r, Original = f.Original, Carved = f.Carved, SourceSlot = f.SourceSlot,
-                    FaceSlot = f.FaceSlot, MapU = f.MapU, MapV = f.MapV, Triangles = f.Triangles,
-                });
-            }
+                if (byPath.TryGetValue(_paths[i], out var r)) bound.Faces.Add(Faces[i].BoundTo(r));
             return bound.Faces.Count > 0 ? bound : null;
         }
 
@@ -196,72 +287,37 @@ namespace Engraving.Carving
 
         static CarveFace MakeFace(CarveModel model, MeshRenderer r, MeshSnapshot s, Matrix4x4 toRoot, List<int> faceTris, int sourceSlot)
         {
-            var mesh = r.GetComponent<MeshFilter>().sharedMesh;
-            bool haveNormals = s.Normals != null && s.Normals.Length == s.Vertices.Length;
             bool haveUvs = s.Uvs != null && s.Uvs.Length == s.Vertices.Length;
-            var verts = new List<Vector3>(s.Vertices);
-            var norms = haveNormals ? new List<Vector3>(s.Normals) : null;
-            var uvs = new List<Vector2>(haveUvs ? s.Uvs : new Vector2[s.Vertices.Length]);
-
-            // remove the face triangles from their submeshes
-            var faceSet = new HashSet<long>();
-            for (int i = 0; i < faceTris.Count; i += 3) faceSet.Add(TriKey(faceTris[i], faceTris[i + 1], faceTris[i + 2]));
-            var subs = new List<int[]>();
-            foreach (var t in s.SubMeshTriangles)
-            {
-                var keep = new List<int>(t.Length);
-                for (int i = 0; i + 2 < t.Length; i += 3)
-                    if (!faceSet.Contains(TriKey(t[i], t[i + 1], t[i + 2]))) { keep.Add(t[i]); keep.Add(t[i + 1]); keep.Add(t[i + 2]); }
-                subs.Add(keep.ToArray());
-            }
-
-            // the face on copies of its vertices, with projected UVs; collect data for the UV fit
-            var map = new Dictionary<int, int>();
-            var faceIdx = new int[faceTris.Count];
+            int nt = faceTris.Count / 3;
+            var triFace = new float[nt * 6];
+            var triOrig = new float[nt * 6];
+            var triDepth = new float[nt];
             var fit = new List<(Vector2 face, Vector2 orig)>();
-            for (int k = 0; k < faceTris.Count; k++)
+            for (int t = 0; t < nt; t++)
             {
-                int i = faceTris[k];
-                if (!map.TryGetValue(i, out int j))
+                float z = 0;
+                for (int k = 0; k < 3; k++)
                 {
-                    j = verts.Count;
-                    map[i] = j;
-                    verts.Add(s.Vertices[i]);
-                    if (haveNormals) norms.Add(s.Normals[i]);
-                    var fuv = model.Project(toRoot.MultiplyPoint3x4(s.Vertices[i]));
-                    uvs.Add(fuv);
-                    if (haveUvs) fit.Add((fuv, s.Uvs[i]));
+                    int i = faceTris[t * 3 + k];
+                    var p = toRoot.MultiplyPoint3x4(s.Vertices[i]);
+                    var fuv = model.Project(p);
+                    triFace[t * 6 + k * 2] = fuv.x; triFace[t * 6 + k * 2 + 1] = fuv.y;
+                    var o = haveUvs ? s.Uvs[i] : fuv;
+                    triOrig[t * 6 + k * 2] = o.x; triOrig[t * 6 + k * 2 + 1] = o.y;
+                    if (haveUvs) fit.Add((fuv, o));
+                    z += p.z * model.Side;
                 }
-                faceIdx[k] = j;
+                triDepth[t] = z / 3f;
             }
-            subs.Add(faceIdx);
-
-            var m = new Mesh { indexFormat = verts.Count > 65000 ? UnityEngine.Rendering.IndexFormat.UInt32 : UnityEngine.Rendering.IndexFormat.UInt16 };
-            m.name = mesh.name + "_carved";
-            m.SetVertices(verts);
-            if (haveNormals) m.SetNormals(norms);
-            m.SetUVs(0, uvs);
-            m.subMeshCount = subs.Count;
-            for (int i = 0; i < subs.Count; i++) m.SetTriangles(subs[i], i);
-            if (!haveNormals) m.RecalculateNormals();
-            m.RecalculateBounds();
-            m.RecalculateTangents();
-            m.UploadMeshData(true);
 
             var face = new CarveFace
             {
-                Renderer = r, Original = mesh, Carved = m, SourceSlot = sourceSlot, FaceSlot = subs.Count - 1,
-                Triangles = faceTris.Count / 3,
+                Renderer = r, Original = r.GetComponent<MeshFilter>().sharedMesh, Side = model.Side, SourceSlot = sourceSlot,
+                Triangles = nt, FaceTris = faceTris.ToArray(), Snap = s,
+                TriFaceUV = triFace, TriOrigUV = triOrig, TriDepth = triDepth,
             };
             FitUvMap(fit, out face.MapU, out face.MapV);
             return face;
-        }
-
-        static long TriKey(int a, int b, int c)
-        {
-            // order-independent key for a triangle
-            int lo = Math.Min(a, Math.Min(b, c)), hi = Math.Max(a, Math.Max(b, c)), mid = a + b + c - lo - hi;
-            return ((long)lo * 1000003L + mid) * 1000003L + hi;
         }
 
         /// <summary>Least squares: orig.x ≈ MapU·(u,v,1), orig.y ≈ MapV·(u,v,1).</summary>

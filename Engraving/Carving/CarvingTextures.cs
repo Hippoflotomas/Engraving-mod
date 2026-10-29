@@ -79,9 +79,13 @@ namespace Engraving.Carving
         }
 
         /// <summary>Asks for a carving; the callback runs on the main thread (immediately if it's cached).</summary>
-        public static void Request(string script, float w, float h, float ppm, Action<Carving> done)
+        public static void Request(string script, float w, float h, float ppm, Action<Carving> done) =>
+            Request(script, w, h, ppm, null, done);
+
+        /// <summary>As above; <paramref name="pictures"/> maps picture charge names to Heraldry Mod fingerprints.</summary>
+        public static void Request(string script, float w, float h, float ppm, IDictionary<string, string> pictures, Action<Carving> done)
         {
-            string key = KeyFor(script, w, h, ppm);
+            string key = KeyFor(script, w, h, ppm) + "|" + HeraldryCharges.KeyOf(pictures);
             Carving cached;
             lock (Gate)
             {
@@ -103,6 +107,7 @@ namespace Engraving.Carving
                     var sw = Stopwatch.StartNew();
                     var parsed = Parser.Parse(script);
                     carving.Diagnostics.AddRange(parsed.Diagnostics);
+                    HeraldryCharges.Apply(parsed.Spec, pictures);
                     var opt = new RenderOptions { Width = w, Height = h, PixelsPerMetre = ppm };
                     RenderResult result;
                     lock (lib ?? (object)Gate) result = EngravingRenderer.Render(parsed.Spec, lib, opt);
@@ -220,9 +225,9 @@ namespace Engraving.Carving
         {
             var tex = MainTex(source);
             Vector2 sc = tex != null ? source.mainTextureScale : Vector2.one, of = tex != null ? source.mainTextureOffset : Vector2.zero;
-            // the map rounded, so faces laid out the same way share a texture
-            string R(Vector3 v) => $"{v.x:0.###},{v.y:0.###},{v.z:0.###}";
-            return "a|" + c.Key + "|" + (tex != null ? tex.GetInstanceID() : 0) + "|" + sc + of + "|" + R(face.MapU) + "|" + R(face.MapV);
+            // the face layout: walls of the same prefab share the same triangle arrays
+            int layout = face.TriOrigUV != null ? System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(face.TriOrigUV) : 0;
+            return "a|" + c.Key + "|" + (tex != null ? tex.GetInstanceID() : 0) + "|" + sc + of + "|" + layout + "|" + EngravingPlugin.AlbedoMaxSize.Value;
         }
 
         static Texture MainTex(Material m) => m != null && m.HasProperty("_MainTex") ? m.mainTexture : null;
@@ -251,10 +256,15 @@ namespace Engraving.Carving
                 Vector3 mu = face.MapU, mv = face.MapV;
                 void Build()
                 {
-                    var src = tex != null && SourcePixels.TryGetValue(tex, out var s) ? s : (null, 0, 0);
+                    var src = tex != null && SourcePixels.TryGetValue(tex, out var sp) ? sp : (null, 0, 0);
+                    int maxSize = EngravingPlugin.AlbedoMaxSize.Value;
                     Color32[] px = null;
-                    CarvingJobs.Run(() => px = AlbedoPixels(c, src.Item1, src.Item2, src.Item3, mu, mv, sc, of), () =>
-                        CarvingJobs.Upload(() => Finish(key, MakeTexture(px, c.Map.Width, c.Map.Height, false, "Engraving_Albedo"))));
+                    int aw = 0, ah = 0;
+                    CarvingJobs.Run(() =>
+                    {
+                        AlbedoSize(c, face, src.Item2, src.Item3, sc, maxSize, out aw, out ah);
+                        px = AlbedoPixels(c, aw, ah, src.Item1, src.Item2, src.Item3, face, sc, of);
+                    }, () => CarvingJobs.Upload(() => Finish(key, MakeTexture(px, aw, ah, false, "Engraving_Albedo"))));
                 }
                 if (tex == null) Build();
                 else ReadSource(tex, Build);
@@ -338,33 +348,135 @@ namespace Engraving.Carving
 
         static byte ToByte(float n) => (byte)Math.Max(0, Math.Min(255, (int)Math.Round((n * 0.5f + 0.5f) * 255)));
 
-        /// <summary>The wall's texture laid over the face as it was, darkened where the wood is cut away.</summary>
-        static Color32[] AlbedoPixels(Carving c, Color32[] src, int sw, int sh, Vector3 mu, Vector3 mv, Vector2 scale, Vector2 offset)
+        /// <summary>
+        /// The albedo's size: as sharp as the wall's own texture is on this face (so the carving doesn't look
+        /// softer than the wall next to it), at least the heightmap's size, at most <paramref name="maxSize"/>.
+        /// </summary>
+        static void AlbedoSize(Carving c, CarveFace face, int sw, int sh, Vector2 scale, int maxSize, out int aw, out int ah)
+        {
+            int mw = c.Map.Width, mh = c.Map.Height;
+            float k = 1f;
+            if (sw > 0 && face.TriFaceUV != null)
+            {
+                // texels of the source per unit of face UV area, from the triangles' areas in both spaces
+                double faceArea = 0, srcArea = 0;
+                for (int t = 0; t < face.TriDepth.Length; t++)
+                {
+                    faceArea += Math.Abs(Area(face.TriFaceUV, t));
+                    srcArea += Math.Abs(Area(face.TriOrigUV, t)) * sw * sh * Math.Abs(scale.x * scale.y);
+                }
+                if (faceArea > 1e-9)
+                {
+                    // texels per face UV unit, against the heightmap's pixels per face UV unit
+                    double density = Math.Sqrt(srcArea / faceArea);
+                    k = (float)(density / Math.Sqrt((double)mw * mh));
+                }
+            }
+            k = Mathf.Clamp(k, 1f, 4f);
+            float longest = Math.Max(mw, mh) * k;
+            if (longest > maxSize) k *= maxSize / longest;
+            k = Math.Max(k, 1f);
+            aw = Math.Max(1, (int)Math.Round(mw * k));
+            ah = Math.Max(1, (int)Math.Round(mh * k));
+        }
+
+        static float Area(float[] t, int i)
+        {
+            int o = i * 6;
+            return 0.5f * ((t[o + 2] - t[o]) * (t[o + 5] - t[o + 1]) - (t[o + 4] - t[o]) * (t[o + 3] - t[o + 1]));
+        }
+
+        /// <summary>
+        /// The wall's texture laid over the face as it was, darkened where the wood is cut away. Each texel looks
+        /// up the frontmost face triangle under it and reads the wall's texture at that triangle's own UVs, so
+        /// patchwork textures (stone blocks) stay intact; texels no triangle covers use the fitted map.
+        /// </summary>
+        static Color32[] AlbedoPixels(Carving c, int aw, int ah, Color32[] src, int sw, int sh, CarveFace face, Vector2 scale, Vector2 offset)
         {
             var m = c.Map;
-            int w = m.Width, h = m.Height;
+            int mw = m.Width, mh = m.Height;
+
+            // original UV per texel, from the frontmost triangle covering it
+            var ou = new float[aw * ah];
+            var ov = new float[aw * ah];
+            var depth = new float[aw * ah];
+            for (int i = 0; i < depth.Length; i++) depth[i] = float.NegativeInfinity;
+            if (src != null && face.TriFaceUV != null)
+                Rasterise(face, aw, ah, ou, ov, depth);
+
             var plain = new Color32(150, 120, 90, 255);
-            var px = new Color32[w * h];
-            for (int ty = 0; ty < h; ty++)
+            var px = new Color32[aw * ah];
+            for (int ty = 0; ty < ah; ty++)
             {
-                int y = h - 1 - ty;
-                float v = (ty + 0.5f) / h;
-                for (int x = 0; x < w; x++)
+                float v = (ty + 0.5f) / ah;
+                for (int x = 0; x < aw; x++)
                 {
-                    float u = (x + 0.5f) / w;
+                    float u = (x + 0.5f) / aw;
+                    int i = ty * aw + x;
                     Color32 col = plain;
                     if (src != null)
                     {
-                        float ou = mu.x * u + mu.y * v + mu.z;
-                        float ov = mv.x * u + mv.y * v + mv.z;
-                        col = Sample(src, sw, sh, ou * scale.x + offset.x, ov * scale.y + offset.y);
+                        float su, sv;
+                        if (!float.IsNegativeInfinity(depth[i])) { su = ou[i]; sv = ov[i]; }
+                        else
+                        {
+                            su = face.MapU.x * u + face.MapU.y * v + face.MapU.z;
+                            sv = face.MapV.x * u + face.MapV.y * v + face.MapV.z;
+                        }
+                        col = Sample(src, sw, sh, su * scale.x + offset.x, sv * scale.y + offset.y);
                     }
                     // deeper cuts catch less light: 1 at the surface, about 0.65 at the bottom of a groove
-                    float shade = 0.55f + 0.45f * m.H[y * w + x];
-                    px[ty * w + x] = new Color32((byte)(col.r * shade), (byte)(col.g * shade), (byte)(col.b * shade), col.a);
+                    float shade = 0.55f + 0.45f * HeightAt(m, u, v);
+                    px[i] = new Color32((byte)(col.r * shade), (byte)(col.g * shade), (byte)(col.b * shade), col.a);
                 }
             }
             return px;
+        }
+
+        /// <summary>Fills in, per texel, the original UV of the frontmost face triangle covering it.</summary>
+        static void Rasterise(CarveFace face, int aw, int ah, float[] ou, float[] ov, float[] depth)
+        {
+            var f = face.TriFaceUV;
+            var o = face.TriOrigUV;
+            const float Edge = -1e-3f;   // a hair of overlap so texels on shared edges aren't missed
+            for (int t = 0; t < face.TriDepth.Length; t++)
+            {
+                int b = t * 6;
+                float x0 = f[b] * aw, y0 = f[b + 1] * ah, x1 = f[b + 2] * aw, y1 = f[b + 3] * ah, x2 = f[b + 4] * aw, y2 = f[b + 5] * ah;
+                float den = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2);
+                if (Math.Abs(den) < 1e-9f) continue;
+                int minX = Math.Max(0, (int)Math.Floor(Math.Min(x0, Math.Min(x1, x2)))), maxX = Math.Min(aw - 1, (int)Math.Ceiling(Math.Max(x0, Math.Max(x1, x2))));
+                int minY = Math.Max(0, (int)Math.Floor(Math.Min(y0, Math.Min(y1, y2)))), maxY = Math.Min(ah - 1, (int)Math.Ceiling(Math.Max(y0, Math.Max(y1, y2))));
+                float d = face.TriDepth[t];
+                for (int y = minY; y <= maxY; y++)
+                {
+                    float py = y + 0.5f;
+                    for (int x = minX; x <= maxX; x++)
+                    {
+                        float pxc = x + 0.5f;
+                        float w0 = ((y1 - y2) * (pxc - x2) + (x2 - x1) * (py - y2)) / den;
+                        float w1 = ((y2 - y0) * (pxc - x2) + (x0 - x2) * (py - y2)) / den;
+                        float w2 = 1 - w0 - w1;
+                        if (w0 < Edge || w1 < Edge || w2 < Edge) continue;
+                        int i = y * aw + x;
+                        if (d <= depth[i]) continue;
+                        depth[i] = d;
+                        ou[i] = w0 * o[b] + w1 * o[b + 2] + w2 * o[b + 4];
+                        ov[i] = w0 * o[b + 1] + w1 * o[b + 3] + w2 * o[b + 5];
+                    }
+                }
+            }
+        }
+
+        /// <summary>The heightmap at face UV (u, v up), bilinear; heightmap rows run downward.</summary>
+        static float HeightAt(HeightMap m, float u, float v)
+        {
+            float fx = u * m.Width - 0.5f, fy = (1 - v) * m.Height - 0.5f;
+            int x0 = Math.Max(0, Math.Min(m.Width - 1, (int)Math.Floor(fx))), y0 = Math.Max(0, Math.Min(m.Height - 1, (int)Math.Floor(fy)));
+            int x1 = Math.Min(m.Width - 1, x0 + 1), y1 = Math.Min(m.Height - 1, y0 + 1);
+            float tx = Mathf.Clamp01(fx - x0), ty = Mathf.Clamp01(fy - y0);
+            float a = m.H[y0 * m.Width + x0], b = m.H[y0 * m.Width + x1], cc = m.H[y1 * m.Width + x0], d = m.H[y1 * m.Width + x1];
+            return (a + (b - a) * tx) + ((cc + (d - cc) * tx) - (a + (b - a) * tx)) * ty;
         }
 
         static Color32 Sample(Color32[] px, int sw, int sh, float u, float v)
