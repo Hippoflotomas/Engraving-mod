@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Pure C# engraving engine: language, layout and heightmap rendering. No Unity or Valheim references,
+    so it can be built and tested anywhere. netstandard2.0 keeps the API surface compatible with the
+    mod's net48 target; the mod compiles these sources directly (see Engraving/Engraving.csproj).
+  -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>10</LangVersion>
+    <RootNamespace>Engraving.Core</RootNamespace>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+</Project>

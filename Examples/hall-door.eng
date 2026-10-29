@@ -1,0 +1,6 @@
+# A door panel for the great hall
+background recessed
+border top and bottom: knotwork
+border left and right: ring-chain
+center: a sun
+top left and top right: a star, small

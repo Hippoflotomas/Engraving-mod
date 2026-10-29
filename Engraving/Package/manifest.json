@@ -1,6 +1,6 @@
 ﻿{
-  "name": "JotunnModStub",
-  "description": "",
+  "name": "Engraving",
+  "description": "Carve procedurally generated Norse engravings into wall pieces, described in plain words.",
   "version_number": "0.0.1",
   "website_url": "",
   "dependencies": [

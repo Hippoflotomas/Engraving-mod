@@ -3,8 +3,8 @@
   <PropertyGroup>
     <OutputType>Library</OutputType>
     <TargetFramework>net48</TargetFramework>
-    <RootNamespace>JotunnModStub</RootNamespace>
-    <AssemblyName>JotunnModStub</AssemblyName>
+    <RootNamespace>Engraving</RootNamespace>
+    <AssemblyName>Engraving</AssemblyName>
     <FileAlignment>512</FileAlignment>
     <Deterministic>true</Deterministic>
     <LangVersion>10</LangVersion>
@@ -47,9 +47,15 @@
     <PackageReference Include="JotunnLib" Version="2.27.1" />
   </ItemGroup>
 
+  <!-- The engraving engine lives in Engraving.Core (no Unity references) and is compiled straight into this dll,
+       so there is only one assembly to ship. -->
+  <ItemGroup>
+    <Compile Include="..\Engraving.Core\**\*.cs" Exclude="..\Engraving.Core\obj\**;..\Engraving.Core\bin\**" LinkBase="Core" />
+  </ItemGroup>
+
   <PropertyGroup>
     <VALHEIM_MANAGED>$(VALHEIM_INSTALL)/valheim_Data/Managed</VALHEIM_MANAGED>
-    <UNITY_FOLDER>$(SolutionDir)JotunnModStubUnity</UNITY_FOLDER>
+    <UNITY_FOLDER>$(SolutionDir)EngravingUnity</UNITY_FOLDER>
   </PropertyGroup>
 
   <Target Name="CopyToUnity">

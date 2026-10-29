@@ -1,0 +1,9 @@
+size 2 by 2
+background hatched
+border top: beads
+border bottom: 3 lines
+border left: runes "Odin"
+border right: knotwork, narrow, 2 strands
+top left: a crescent; top: a heart, incised; top right: a cross
+left: a diamond; center: a ring; center: a star, small; right: a hexagon, sunken
+bottom left: an arrow rotated 45; bottom: two triangles; bottom right: a sun, outlined

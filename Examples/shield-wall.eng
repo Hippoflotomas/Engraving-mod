@@ -1,0 +1,7 @@
+# No side borders, so the top and bottom bands run off the edges onto the next panel
+background stippled
+border top: knotwork, wide, 4 strands
+border bottom: zigzag
+top: three stars in a row
+center: a valknut
+bottom: four circles in a ring, sunken
