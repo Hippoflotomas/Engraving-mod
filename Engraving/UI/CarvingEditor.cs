@@ -57,6 +57,7 @@ namespace Engraving.UI
             _panel = gui.CreateWoodpanel(GUIManager.CustomGUIFront.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f),
                 Vector2.zero, PanelW, PanelH, true);
             _panel.name = "EngravingCarvingEditor";
+            _panel.SetActive(false); // Jötunn makes it active; Show turns it on once there's a face to carve
 
             _title = Label("Carve", LeftX, 18, 600, 40, 26, gui.ValheimOrange);
 
@@ -111,6 +112,8 @@ namespace Engraving.UI
             _model = piece.ModelFor(side);
             if (_model == null)
             {
+                _target = null;
+                if (_panel.activeSelf) Hide();
                 Player.m_localPlayer?.Message(MessageHud.MessageType.Center, "There's no flat face to carve on this side.");
                 return;
             }
@@ -192,7 +195,7 @@ namespace Engraving.UI
                 GUIManager.BlockInput(false);
             }
             if (_panel == null || !_panel.activeSelf) return;
-            if (_target == null) { Hide(); return; }   // destroyed while editing
+            if (_target == null || _model == null) { Hide(); return; }   // destroyed while editing
 
             if (ZInput.GetKeyDown(KeyCode.Escape, false)) { Hide(); return; }
             bool ctrl = ZInput.GetKey(KeyCode.LeftControl, false) || ZInput.GetKey(KeyCode.RightControl, false);

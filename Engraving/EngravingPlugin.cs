@@ -172,6 +172,19 @@ namespace Engraving
                             $" _MainTex:{m != null && m.HasProperty("_MainTex")} _BumpMap:{m != null && m.HasProperty("_BumpMap")}");
                 }
             }
+            var carved = piece.GetComponent<CarvedPiece>();
+            if (carved != null)
+            {
+                string text = carved.GetText();
+                c.Print($"  carving: {(text.Length == 0 ? "none" : $"{text.Length} chars on side {(carved.GetSide() > 0 ? "+Z" : "-Z")}")}; " +
+                        $"status: {carved.Status}; shown: {carved.Shown}");
+                foreach (var r in piece.GetComponentsInChildren<MeshRenderer>(true))
+                {
+                    var mesh = r.GetComponent<MeshFilter>()?.sharedMesh;
+                    c.Print($"    renderer '{r.name}' (active {r.gameObject.activeInHierarchy}, enabled {r.enabled}): mesh '{mesh?.name}', " +
+                            $"{r.sharedMaterials.Length} materials [{string.Join(", ", r.sharedMaterials.Select(m => m != null ? m.name : "null"))}]");
+                }
+            }
             if (player != null)
                 c.Print($"  you're on side {(piece.transform.InverseTransformPoint(player.transform.position).z >= 0 ? "+Z" : "-Z")}");
         }

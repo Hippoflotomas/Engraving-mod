@@ -25,8 +25,19 @@ namespace Engraving.Carving
         string _shownKey;
         Carving _shown;
         CarveModel _model;
-        readonly List<(CarveFace face, Material source, Material carved, Material[] before, float depth)> _applied =
-            new List<(CarveFace, Material, Material, Material[], float)>();
+        /// <summary>Bumped on every Show/Clear, so late texture callbacks for an old carving are ignored.</summary>
+        int _token;
+        /// <summary>Faces whose renderer is switched off (worn/broken states); carved when they switch on.</summary>
+        readonly List<CarveFace> _waiting = new List<CarveFace>();
+        /// <summary>Faces with texture requests out, so they aren't asked for twice.</summary>
+        readonly HashSet<CarveFace> _started = new HashSet<CarveFace>();
+        readonly List<string> _textureKeys = new List<string>();
+        readonly List<(CarveFace face, Material carved, Material[] before)> _applied =
+            new List<(CarveFace, Material, Material[])>();
+
+        /// <summary>What happened last, for engrave_inspect.</summary>
+        internal string Status = "not carved";
+        internal bool Shown => _shownKey != null;
 
         /// <summary>Bumped when charges or settings change, so every piece redraws.</summary>
         internal static int Generation;
@@ -62,6 +73,7 @@ namespace Engraving.Carving
             _nview.ClaimOwnership();
             _nview.GetZDO().Set(TextKey, text);
             _nview.GetZDO().Set(SideKey, side);
+            Jotunn.Logger.LogInfo($"[Engraving] Carving set on '{_prefab}' side {side}: {text.Length} characters.");
             Refresh();
         }
 
@@ -69,26 +81,39 @@ namespace Engraving.Carving
         {
             var zdo = _nview != null && _nview.IsValid() ? _nview.GetZDO() : null;
             if (zdo == null) return;
+            StartWaitingFaces();
             if (zdo.DataRevision == _lastRevision && _lastGeneration == Generation) return;
             _lastRevision = zdo.DataRevision;
             _lastGeneration = Generation;
 
             string text = GetText();
             int side = GetSide();
-            if (string.IsNullOrWhiteSpace(text)) { Clear(); return; }
+            if (string.IsNullOrWhiteSpace(text)) { Clear(); Status = "not carved"; return; }
 
             var model = CarveModel.For(gameObject, _prefab, side);
-            if (model == null) { Clear(); return; }
+            if (model == null) { Clear(); Status = "no face on that side"; return; }
             float ppm = EngravingPlugin.PixelsPerMetre.Value;
             string key = CarvingJobs.KeyFor(text, model.Width, model.Height, ppm) + "|" + side + "|" + EngravingPlugin.CarveDepth.Value;
             if (key == _shownKey) return;
 
+            Status = "drawing";
             CarvingJobs.Request(text, model.Width, model.Height, ppm, carving =>
             {
-                if (this == null || carving.Map == null) return;
+                if (this == null) return;
+                if (carving.Map == null)
+                {
+                    Status = "drawing failed: " + string.Join("; ", carving.Diagnostics.Select(d => d.Message));
+                    Jotunn.Logger.LogWarning($"[Engraving] '{_prefab}': {Status}");
+                    return;
+                }
                 // the text may have changed again while this was drawing
                 if (GetText() != text || GetSide() != side) return;
-                Show(carving, model, key);
+                try { Show(carving, model, key); }
+                catch (System.Exception e)
+                {
+                    Status = "applying failed: " + e.Message;
+                    Jotunn.Logger.LogWarning($"[Engraving] '{_prefab}': couldn't apply the carving: {e}");
+                }
             });
         }
 
@@ -98,40 +123,72 @@ namespace Engraving.Carving
             _model = model;
             _shown = carving;
             _shownKey = key;
+            // only what can be seen now; the worn and broken models wait until the wall switches to them
             foreach (var face in model.Faces)
             {
-                var r = face.Renderer;
-                if (r == null) continue;
-                var filter = r.GetComponent<MeshFilter>();
-                var before = r.sharedMaterials;
-                var source = face.SourceSlot < before.Length ? before[face.SourceSlot] : before.FirstOrDefault();
-                float depth = EngravingPlugin.CarveDepth.Value;
-                var set = CarvingTextures.Acquire(carving, source, face, depth);
-                var mat = MakeMaterial(source, set);
+                if (face.Renderer == null) continue;
+                if (face.Renderer.gameObject.activeInHierarchy) StartFace(face);
+                else _waiting.Add(face);
+            }
+            Status = $"texturing {_started.Count} renderer(s), {_waiting.Count} waiting (hidden); drawn in {carving.Millis} ms";
+        }
 
-                // the carved mesh has one more submesh: the face
-                var mats = new Material[face.FaceSlot + 1];
-                for (int i = 0; i < mats.Length; i++) mats[i] = i < before.Length ? before[i] : source;
-                mats[face.FaceSlot] = mat;
-                filter.sharedMesh = face.Carved;
-                r.sharedMaterials = mats;
-                _applied.Add((face, source, mat, before, depth));
+        void StartWaitingFaces()
+        {
+            if (_waiting.Count == 0 || _shown == null) return;
+            for (int i = _waiting.Count - 1; i >= 0; i--)
+            {
+                var face = _waiting[i];
+                if (face.Renderer == null) { _waiting.RemoveAt(i); continue; }
+                if (!face.Renderer.gameObject.activeInHierarchy) continue;
+                _waiting.RemoveAt(i);
+                StartFace(face);
             }
         }
 
-        static Material MakeMaterial(Material source, CarvingTextures.Set set)
+        /// <summary>Asks for this face's textures; the mesh and material change together once both exist.</summary>
+        void StartFace(CarveFace face)
+        {
+            if (!_started.Add(face)) return;
+            var r = face.Renderer;
+            var before = r.sharedMaterials;
+            var source = face.SourceSlot < before.Length ? before[face.SourceSlot] : before.FirstOrDefault();
+            int token = _token;
+            var carving = _shown;
+            Texture2D normal = null, albedo = null;
+
+            void Ready()
+            {
+                if (this == null || token != _token || normal == null || albedo == null || r == null) return;
+                var mat = MakeMaterial(source, albedo, normal);
+                // the carved mesh has one more submesh: the face
+                var now = r.sharedMaterials;
+                var mats = new Material[face.FaceSlot + 1];
+                for (int i = 0; i < mats.Length; i++) mats[i] = i < now.Length ? now[i] : source;
+                mats[face.FaceSlot] = mat;
+                r.GetComponent<MeshFilter>().sharedMesh = face.Carved;
+                r.sharedMaterials = mats;
+                _applied.Add((face, mat, before));
+                Status = $"shown on {_applied.Count} renderer(s), {_waiting.Count} waiting (hidden); drawn in {carving.Millis} ms";
+            }
+
+            _textureKeys.Add(CarvingTextures.AcquireNormal(carving, EngravingPlugin.CarveDepth.Value, t => { normal = t; Ready(); }));
+            _textureKeys.Add(CarvingTextures.AcquireAlbedo(carving, source, face, t => { albedo = t; Ready(); }));
+        }
+
+        static Material MakeMaterial(Material source, Texture2D albedo, Texture2D normal)
         {
             var m = source != null ? new Material(source) : new Material(Shader.Find("Standard"));
             m.name = "Engraving_Carved";
             if (m.HasProperty("_MainTex"))
             {
-                m.mainTexture = set.Albedo;
+                m.mainTexture = albedo;
                 m.mainTextureScale = Vector2.one;
                 m.mainTextureOffset = Vector2.zero;
             }
             if (m.HasProperty("_BumpMap"))
             {
-                m.SetTexture("_BumpMap", set.Normal);
+                m.SetTexture("_BumpMap", normal);
                 m.SetTextureScale("_BumpMap", Vector2.one);
                 m.SetTextureOffset("_BumpMap", Vector2.zero);
                 m.EnableKeyword("_NORMALMAP");
@@ -142,7 +199,8 @@ namespace Engraving.Carving
 
         void Clear()
         {
-            foreach (var (face, source, carved, before, depth) in _applied)
+            _token++;
+            foreach (var (face, carved, before) in _applied)
             {
                 if (face.Renderer != null)
                 {
@@ -150,10 +208,13 @@ namespace Engraving.Carving
                     if (filter != null) filter.sharedMesh = face.Original;
                     face.Renderer.sharedMaterials = before;
                 }
-                if (_shown != null) CarvingTextures.Release(_shown, source, face, depth);
                 if (carved != null) Destroy(carved);
             }
+            foreach (var k in _textureKeys) CarvingTextures.Release(k);
+            _textureKeys.Clear();
             _applied.Clear();
+            _waiting.Clear();
+            _started.Clear();
             _shown = null;
             _shownKey = null;
             _model = null;

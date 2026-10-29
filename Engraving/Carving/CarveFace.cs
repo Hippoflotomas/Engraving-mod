@@ -36,17 +36,16 @@ namespace Engraving.Carving
         public float Width => Bounds.width;
         public float Height => Bounds.height;
 
-        /// <summary>A face must point within this of the side axis (cos of the angle).</summary>
-        const float MinFacing = 0.7f;
-        /// <summary>...and lie within this of the outermost point on that side (metres).</summary>
-        const float Depth = 0.06f;
+        /// <summary>A face must point within this of the side axis (cos of the angle; 0.5 = 60°).</summary>
+        const float MinFacing = 0.5f;
 
         static readonly Dictionary<string, CarveModel> Cache = new Dictionary<string, CarveModel>();
 
         /// <summary>The renderers that show the piece up close: LOD0 if there is a LOD group, else every mesh renderer.</summary>
         static List<MeshRenderer> CloseRenderers(GameObject root)
         {
-            var all = root.GetComponentsInChildren<MeshRenderer>(true).Where(r => r.GetComponent<MeshFilter>()?.sharedMesh != null).ToList();
+            var all = root.GetComponentsInChildren<MeshRenderer>(true)
+                .Where(r => r.GetComponent<MeshFilter>()?.sharedMesh != null && !IsOverlay(r)).ToList();
             var lodGroups = root.GetComponentsInChildren<LODGroup>(true);
             if (lodGroups.Length == 0) return all;
             var far = new HashSet<Renderer>();
@@ -59,6 +58,10 @@ namespace Engraving.Carving
             }
             return all.Where(r => !far.Contains(r)).ToList();
         }
+
+        /// <summary>Snow and similar layers drawn over the piece: never carved.</summary>
+        static bool IsOverlay(MeshRenderer r) =>
+            r.sharedMaterials.Any(m => m != null && m.shader != null && m.shader.name.IndexOf("Snow", StringComparison.OrdinalIgnoreCase) >= 0);
 
         /// <summary>Builds (or reuses) the carve model for this piece and side. Null if no flat face was found.</summary>
         public static CarveModel For(GameObject root, string prefabName, int side)
@@ -111,7 +114,7 @@ namespace Engraving.Carving
             var rootInv = root.transform.worldToLocalMatrix;
             var renderers = CloseRenderers(root);
             var snaps = new List<(MeshRenderer r, MeshSnapshot s, Matrix4x4 toRoot)>();
-            float outer = float.NegativeInfinity;
+            float outer = float.NegativeInfinity, inner = float.PositiveInfinity;
             foreach (var r in renderers)
             {
                 var mesh = r.GetComponent<MeshFilter>().sharedMesh;
@@ -120,9 +123,17 @@ namespace Engraving.Carving
                 catch (Exception e) { Jotunn.Logger.LogWarning($"[Engraving] Mesh '{mesh.name}' unreadable: {e.Message}"); continue; }
                 var toRoot = rootInv * r.transform.localToWorldMatrix;
                 snaps.Add((r, snap, toRoot));
-                foreach (var v in snap.Vertices) outer = Mathf.Max(outer, toRoot.MultiplyPoint3x4(v).z * side);
+                foreach (var v in snap.Vertices)
+                {
+                    float z = toRoot.MultiplyPoint3x4(v).z * side;
+                    outer = Mathf.Max(outer, z);
+                    inner = Mathf.Min(inner, z);
+                }
             }
             if (snaps.Count == 0) return null;
+            // Everything facing this way in the front half of the piece is carved: planks and stones sit at
+            // different depths (2026-10-29: a 6 cm band caught only half of woodwall's planks)
+            float middle = (outer + inner) * 0.5f;
 
             // pick the face triangles on each renderer
             var picked = new List<(MeshRenderer r, MeshSnapshot s, Matrix4x4 toRoot, List<int> tris, int slot)>();
@@ -145,7 +156,7 @@ namespace Engraving.Carving
                         // front faces wind clockwise in Unity, for which Cross(b-a, c-a) points outward
                         if (n.z * side < MinFacing) continue;
                         float z = (a.z + b.z + c.z) / 3f * side;
-                        if (z < outer - Depth) continue;
+                        if (z < middle) continue;
                         tris.Add(t[i]); tris.Add(t[i + 1]); tris.Add(t[i + 2]);
                         slotCount[sm]++;
                         foreach (var p in new[] { a, b, c })
