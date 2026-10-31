@@ -9,6 +9,7 @@ using Engraving.Core.Charges;
 using Engraving.Core.Imaging;
 using Engraving.Core.Language;
 using Engraving.Core.Render;
+using Engraving.Pictures;
 using HarmonyLib;
 using Jotunn.Entities;
 using Jotunn.Managers;
@@ -18,7 +19,6 @@ namespace Engraving
 {
     [BepInPlugin(PluginGUID, PluginName, PluginVersion)]
     [BepInDependency(Jotunn.Main.ModGuid)]
-    [BepInDependency("com.hippotech.valheimheraldrymod", BepInDependency.DependencyFlags.SoftDependency)]
     //[NetworkCompatibility(CompatibilityLevel.EveryoneMustHaveMod, VersionStrictness.Minor)]
     internal class EngravingPlugin : BaseUnityPlugin
     {
@@ -32,11 +32,21 @@ namespace Engraving
         // https://valheim-modding.github.io/Jotunn/tutorials/localization.html
         public static CustomLocalization Localization = LocalizationManager.Instance.GetLocalization();
 
-        /// <summary>Folder holding the heraldry mod's 'Charges' folder; Engravings sits beside it.</summary>
+        /// <summary>Folder holding the Engravings folder (and Heraldry Mod's Charges folder, if you use it).</summary>
         public static ConfigEntry<string> HeraldryFolder;
+        public static ConfigEntry<bool> UseHeraldryCharges;
+        public static ConfigEntry<string> ServerFolder;
+        public static ConfigEntry<bool> SharePictures;
+        public static ConfigEntry<int> MaxPictureKB, MaxPictureDownloadMB, MaxPictureUploadMB, RelayCacheMB;
+        public static long MaxPictureBytes => (long)MaxPictureKB.Value << 10;
+        public static long MaxDownloadBytes => (long)MaxPictureDownloadMB.Value << 20;
+        public static long MaxUploadBytes => (long)MaxPictureUploadMB.Value << 20;
+        public static long RelayCacheBytes => (long)RelayCacheMB.Value << 20;
         public static ConfigEntry<int> PixelsPerMetre;
         public static ConfigEntry<float> CarveDepth;
         public static ConfigEntry<int> AlbedoMaxSize;
+        public static ConfigEntry<bool> KeepWallBumps;
+        public static ConfigEntry<string> EditorMode;
         public static ConfigEntry<string> CarvablePieces;
         public static ConfigEntry<float> ChiselDurability;
         public static ConfigEntry<float> ChiselWearPerCarving;
@@ -47,9 +57,25 @@ namespace Engraving
         private void Awake()
         {
             Instance = this;
-            HeraldryFolder = Config.Bind("Charges", "HeraldryFolder", "",
-                "Folder that contains the heraldry mod's 'Charges' folder; engraving images go in an 'Engravings' folder beside it. " +
-                "Empty = the Heraldry Mod's default, Documents\\ValheimHeraldryMod.");
+            HeraldryFolder = Config.Bind("Pictures", "PictureRoot", "",
+                "Folder holding your 'Engravings' pictures, downloads ('EngravingsDownloaded') and, if UseHeraldryCharges is on, " +
+                "Heraldry Mod's 'Charges'. Empty = Documents\\ValheimHeraldryMod (beside Heraldry Mod's own folders).");
+            UseHeraldryCharges = Config.Bind("Pictures", "UseHeraldryCharges", true,
+                "Also use the PNGs in Heraldry Mod's Charges folder as pictures (plain files; Engraving doesn't need Heraldry Mod).");
+            SharePictures = Config.Bind("Pictures", "SharePictures", true,
+                "Send your own pictures when other players approve fetching them for carvings they see.");
+            MaxPictureKB = Config.Bind("Pictures", "MaxPictureKB", 1024,
+                new ConfigDescription("Largest picture (KB) this computer accepts, sends or serves.", new AcceptableValueRange<int>(16, 8192)));
+            MaxPictureDownloadMB = Config.Bind("Pictures", "MaxPictureDownloadMB", 64,
+                new ConfigDescription("Most picture data (MB) this computer downloads per session.", new AcceptableValueRange<int>(1, 1024)));
+            MaxPictureUploadMB = Config.Bind("Pictures", "MaxPictureUploadMB", 32,
+                new ConfigDescription("Most picture data (MB) this computer sends to other players per session.", new AcceptableValueRange<int>(1, 1024)));
+            ServerFolder = Config.Bind("Server", "ServerPictureFolder", "",
+                "Pictures this computer offers to everyone when it's the server (hosting or dedicated); players get them without asking. " +
+                "Empty = <PictureRoot>\\EngravingsServer.");
+            RelayCacheMB = Config.Bind("Server", "RelayCacheMB", 32,
+                new ConfigDescription("Memory (MB) the server keeps players' pictures in, so they aren't fetched twice. Never written to disk.",
+                    new AcceptableValueRange<int>(0, 512)));
             PixelsPerMetre = Config.Bind("Rendering", "PixelsPerMetre", 256,
                 new ConfigDescription("Texture resolution of carvings (a 2 m wall at 256 is 512 x 512).", new AcceptableValueRange<int>(64, 1024)));
             CarveDepth = Config.Bind("Rendering", "CarveDepth", 0.025f,
@@ -59,9 +85,14 @@ namespace Engraving
                 new ConfigDescription("Largest size of a carving's colour texture. It follows the wall's own texture detail up to this; " +
                                       "higher is sharper but uses more video memory (1024 x 1024 is about 5 MB per distinct carving).",
                     new AcceptableValueList<int>(512, 1024, 2048)));
+            KeepWallBumps = Config.Bind("Rendering", "KeepWallBumps", true,
+                "Blend the wall's own normal map (stone bumps, wood grain) into carvings, so carved stone stays rough. " +
+                "Off: carvings are smooth, and walls of different kinds share one normal map per carving (less video memory).");
             CarvablePieces = Config.Bind("Pieces", "CarvablePieces",
                 "woodwall,wood_wall_half,wood_wall_quarter,stone_wall_1x1,stone_wall_2x1,stone_wall_4x2,wood_door,wood_gate",
                 "Build pieces that can be carved (prefab names, comma separated). Hover a piece and run 'engrave_inspect' to see its name.");
+            EditorMode = Config.Bind("Editor", "Mode", "basic",
+                new ConfigDescription("Which tab the carving window opens on (remembered when you switch).", new AcceptableValueList<string>("basic", "advanced")));
             ChiselDurability = Config.Bind("Chisel", "Durability", 200f, "Chisel durability at quality 1.");
             ChiselWearPerCarving = Config.Bind("Chisel", "WearPerCarving", 10f, "Durability a chisel loses each time you carve or recarve a piece.");
 
@@ -69,28 +100,35 @@ namespace Engraving
             PixelsPerMetre.SettingChanged += (_, __) => CarvedPiece.Generation++;
             CarveDepth.SettingChanged += (_, __) => CarvedPiece.Generation++;
             AlbedoMaxSize.SettingChanged += (_, __) => CarvedPiece.Generation++;
+            KeepWallBumps.SettingChanged += (_, __) => CarvedPiece.Generation++;
+
+            UseHeraldryCharges.SettingChanged += (_, __) => EngravingCharges.LoadLocal();
 
             BuildChargeLibrary();
+            EngravingCharges.LoadLocal();
+            EngravingSync.Init();
             Chisel.Register();
             _harmony = new Harmony(PluginGUID);
             _harmony.PatchAll(typeof(EngravingPlugin).Assembly);
 
             CommandManager.Instance.AddConsoleCommand(new EngraveFileCommand());
             CommandManager.Instance.AddConsoleCommand(new EngraveInspectCommand());
+            CommandManager.Instance.AddConsoleCommand(new EngraveDumpCommand());
             CommandManager.Instance.AddConsoleCommand(new EngraveReloadCommand());
-            Jotunn.Logger.LogInfo($"{PluginName} {PluginVersion} loaded; charge folders: {string.Join(", ", ChargeFolders())}; " +
-                                  (HeraldryCharges.Available ? "picture charges through Heraldry Mod (API " + HeraldryBridge.ApiVersion + ")" :
-                                   HeraldryBridge.Available ? "Heraldry Mod is too old for picture charges (API " + HeraldryBridge.ApiVersion + ", needs 3)" : "no Heraldry Mod"));
+            CommandManager.Instance.AddConsoleCommand(new EngravePendingCommand());
+            CommandManager.Instance.AddConsoleCommand(new EngraveGetCommand());
+            Jotunn.Logger.LogInfo($"{PluginName} {PluginVersion} loaded; pictures in {EngravingCharges.OwnFolder}" +
+                                  (UseHeraldryCharges.Value ? $" and {EngravingCharges.HeraldryChargesFolder}" : ""));
         }
 
         private void Update()
         {
             CarvingJobs.Pump();
-            // a picture arrived from (or was blocked in) Heraldry Mod, or an item icon was read: redraw what uses it
-            bool iconsArrived = ItemIconCharges.Changed;
-            ItemIconCharges.Changed = false;
-            if (HeraldryCharges.Poll() | iconsArrived)
+            EngravingSync.Update();
+            // an item icon was read back: redraw what uses it
+            if (ItemIconCharges.Changed)
             {
+                ItemIconCharges.Changed = false;
                 lock (Charges) Charges.ClearCache();
                 CarvingJobs.SetLibrary(Charges);
                 CarvedPiece.Generation++;
@@ -99,27 +137,11 @@ namespace Engraving
 
         private void OnDestroy() => _harmony?.UnpatchSelf();
 
-        public static string[] ChargeFolders()
-        {
-            string root = string.IsNullOrEmpty(HeraldryFolder.Value)
-                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "ValheimHeraldryMod")
-                : HeraldryFolder.Value;
-            // order matters: engraving art wins over heraldry charges of the same name
-            return new[] { Path.Combine(root, "Engravings"), Path.Combine(root, "Charges") };
-        }
-
         public void BuildChargeLibrary()
         {
             Charges = new ChargeLibrary();
-            var folders = ChargeFolders();
-            try { Directory.CreateDirectory(folders[0]); }
-            catch (Exception e) { Jotunn.Logger.LogWarning($"can't create {folders[0]}: {e.Message}"); }
-            // Engravings first; then Heraldry Mod's pictures (synced between players) if it's installed, else the
-            // heraldry Charges folder read directly
-            Charges.AddSource(new FolderChargeSource(folders[0]));
-            Charges.AddSource(new HeraldryCharges.Source());
-            Charges.AddSource(new UnlessHeraldry(new FolderChargeSource(folders[1])));
-            // last resort: the game's item icons ("a hammer")
+            // pictures by fingerprint (yours, the server's, downloaded, Heraldry Mod's Charges folder), then item icons
+            Charges.AddSource(new EngravingCharges.Source());
             Charges.AddSource(new ItemIconCharges.Source());
             CarvingJobs.SetLibrary(Charges);
             CarvedPiece.Generation++;
@@ -129,20 +151,9 @@ namespace Engraving
         public RenderResult Render(string script, float width, float height, out ParseResult parsed)
         {
             parsed = Parser.Parse(script);
+            EngravingCharges.Apply(parsed.Spec, EngravingCharges.Prepare(script, out _));
             var opt = new RenderOptions { Width = width, Height = height, PixelsPerMetre = PixelsPerMetre.Value };
             lock (Charges) return EngravingRenderer.Render(parsed.Spec, Charges, opt);
-        }
-    }
-
-    /// <summary>A charge source used only when Heraldry Mod isn't there to serve the same pictures.</summary>
-    internal sealed class UnlessHeraldry : IChargeSource
-    {
-        readonly IChargeSource _inner;
-        public UnlessHeraldry(IChargeSource inner) { _inner = inner; }
-        public bool TryGetMask(string normalisedName, out Engraving.Core.Geometry.AlphaMask mask)
-        {
-            mask = null;
-            return !HeraldryCharges.Available && _inner.TryGetMask(normalisedName, out mask);
         }
     }
 
@@ -228,6 +239,25 @@ namespace Engraving
         }
     }
 
+    /// <summary>engrave_dump: writes the hovered carved piece's textures and face layout to disk, for debugging.</summary>
+    internal class EngraveDumpCommand : ConsoleCommand
+    {
+        public override string Name => "engrave_dump";
+        public override string Help => "Save the hovered carved piece's textures and a report to Documents\\ValheimHeraldryMod\\EngravingDebug";
+
+        public override void Run(string[] args)
+        {
+            var c = global::Console.instance;
+            var player = Player.m_localPlayer;
+            var hover = player != null ? player.GetHoverObject() : null;
+            var carved = hover != null ? hover.GetComponentInParent<CarvedPiece>() : null;
+            if (carved == null) { c.Print("Look at a carvable piece first."); return; }
+            string dir = System.IO.Path.Combine(EngravingCharges.Root, "EngravingDebug");
+            try { c.Print($"Saved {carved.Dump(dir)} file(s) to {dir}"); }
+            catch (System.Exception e) { c.Print("Dump failed: " + e.Message); Jotunn.Logger.LogWarning("[Engraving] engrave_dump: " + e); }
+        }
+    }
+
     /// <summary>engrave_reload: re-reads charge images and redraws every carving.</summary>
     internal class EngraveReloadCommand : ConsoleCommand
     {
@@ -236,8 +266,46 @@ namespace Engraving
 
         public override void Run(string[] args)
         {
+            EngravingCharges.LoadLocal();
+            if (ZNet.instance != null && ZNet.instance.IsServer()) EngravingCharges.LoadServerFolder();
             EngravingPlugin.Instance.BuildChargeLibrary();
-            global::Console.instance.Print("Charges reloaded; carvings will redraw.");
+            global::Console.instance.Print("Pictures reloaded; carvings will redraw.");
+        }
+    }
+
+    /// <summary>engrave_pending: pictures carvings here use that you haven't got.</summary>
+    internal class EngravePendingCommand : ConsoleCommand
+    {
+        public override string Name => "engrave_pending";
+        public override string Help => "List pictures that carvings here use and you haven't got (fetch them with engrave_get)";
+
+        public override void Run(string[] args)
+        {
+            var c = global::Console.instance;
+            var list = EngravingCharges.PendingList().Where(w => EngravingCharges.Bytes(w.Fingerprint) == null).ToList();
+            if (list.Count == 0) { c.Print("No pictures waiting."); return; }
+            foreach (var w in list)
+                c.Print($"  {w.Name}  ({w.Fingerprint}){(w.FromServer ? ", the server's" : ", another player's")}: {w.Status}");
+            c.Print("Fetch them with 'engrave_get all', or one by name or fingerprint.");
+        }
+    }
+
+    /// <summary>engrave_get all | name | fingerprint: fetches pictures from the server or other players.</summary>
+    internal class EngraveGetCommand : ConsoleCommand
+    {
+        public override string Name => "engrave_get";
+        public override string Help => "Fetch pictures that carvings here use: engrave_get all | <name> | <fingerprint>";
+
+        public override void Run(string[] args)
+        {
+            var c = global::Console.instance;
+            var list = EngravingCharges.PendingList().Where(w => EngravingCharges.Bytes(w.Fingerprint) == null).ToList();
+            string what = args.Length > 0 ? string.Join(" ", args).Trim().ToLowerInvariant() : "";
+            if (what.Length == 0) { c.Print("usage: " + Help); return; }
+            var pick = what == "all" ? list : list.Where(w => w.Fingerprint == what || (w.Name ?? "").ToLowerInvariant() == what).ToList();
+            if (pick.Count == 0) { c.Print("Nothing like that is waiting (see engrave_pending)."); return; }
+            int n = EngravingSync.Request(pick.Select(w => w.Fingerprint));
+            c.Print(n > 0 ? $"Asking for {n} picture(s)..." : "Already asked; they'll arrive when someone online has them.");
         }
     }
 }

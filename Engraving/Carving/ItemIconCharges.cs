@@ -6,12 +6,14 @@ using Engraving.Core.Geometry;
 using UnityEngine;
 using UnityEngine.Rendering;
 
+using Engraving.Pictures;
+
 namespace Engraving.Carving
 {
     /// <summary>
     /// The game's item icons as charges: "a hammer", "two bronze axes", "a wolf trophy". Matched by the item's
     /// name as players see it or its prefab name; plurals fold as for other charges. Icons are the last resort,
-    /// after built-in shapes, Heraldry Mod's pictures and the image folders. The silhouette is the icon's alpha.
+    /// after built-in shapes and pictures. The silhouette is the icon's alpha.
     /// Icon textures live only on the GPU (often packed in atlases), so each one is copied to a small render
     /// texture and read back asynchronously, once.
     /// </summary>
@@ -50,6 +52,23 @@ namespace Engraving.Carving
             return _index;
         }
 
+        /// <summary>Items with icons, by the name players see, for the basic editor's charge list (empty before ObjectDB loads).</summary>
+        public static List<string> ItemNames()
+        {
+            if (ObjectDB.instance == null || ObjectDB.instance.m_items == null) return new List<string>();
+            var names = new List<string>();
+            foreach (var go in ObjectDB.instance.m_items)
+            {
+                var drop = go != null ? go.GetComponent<ItemDrop>() : null;
+                var shared = drop?.m_itemData?.m_shared;
+                if (shared?.m_icons == null || shared.m_icons.Length == 0) continue;
+                string name = Localization.instance.Localize(shared.m_name);
+                if (string.IsNullOrWhiteSpace(name) || name.Contains("$") || name.Contains("[")) continue;
+                names.Add(name.Trim());
+            }
+            return names.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
         /// <summary>
         /// Main thread, before drawing: starts reading the icons of any items the script names. Returns the names
         /// whose icons are ready, for the render key; <paramref name="waiting"/> counts icons still reading.
@@ -60,7 +79,7 @@ namespace Engraving.Carving
             var index = Index();
             if (index == null) return "";
             var ready = new List<string>();
-            foreach (var charge in Core.Language.Parser.Parse(HeraldryCharges.Visible(script)).Spec.Charges)
+            foreach (var charge in Core.Language.Parser.Parse(EngravingCharges.Visible(script)).Spec.Charges)
             {
                 foreach (var cand in ChargeLibrary.Candidates(charge.Name))
                 {

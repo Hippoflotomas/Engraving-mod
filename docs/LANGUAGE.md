@@ -98,13 +98,17 @@ each other (e.g. `center: a ring` then `center: a star, small`).
 **Names** are looked up in order:
 
 1. built-in shapes (below);
-2. with **Heraldry Mod** installed (a version with API 3, the release after 1.5.0): its picture charges, by the usual heraldry rules (the server's
-   first, then your own, then downloaded). When a carving is made, the picture each name resolved to is recorded
-   with it (a hidden last line, `#charges: wolf=1a2b…`), so **every player carves the same picture**, and players
-   who don't have it yet get it the way heraldry fetches charges for arms;
-3. the `Engravings` folder (on your computer only: other players need the same file);
-4. without Heraldry Mod: the heraldry `Charges` folder;
-5. the game's **item icons**, by the item's name or prefab name: `a hammer`, `two bronze axes`, `a wolf trophy`.
+2. pictures (PNG files), all under `Documents\ValheimHeraldryMod` (config `PictureRoot`), in this order:
+   the server's `EngravingsServer` folder, your `Engravings` folder, Heraldry Mod's `Charges` folder (read as plain
+   files, config `UseHeraldryCharges`; Heraldry Mod itself isn't needed), then pictures you've downloaded
+   (`EngravingsDownloaded`);
+3. the game's **item icons**, by the item's name or prefab name: `a hammer`, `two bronze axes`, `a wolf trophy`.
+
+**Everyone carves the same picture.** When a carving is made, the picture each name resolved to is recorded with
+it by fingerprint (a hidden last line, `#charges: wolf=1a2b…`). A player who hasn't got that picture gets it from the
+server: the server's own pictures (its `EngravingsServer` folder) arrive without asking; another player's pictures
+wait until they're approved with `engrave_get` (see what's waiting with `engrave_pending`). Engraving must be
+installed on the server for pictures to be shared.
 
 Matching ignores case, spaces, hyphens and underscores, and plurals are folded (*wolves* → *wolf*, *axes* → *axe*).
 
@@ -114,6 +118,16 @@ Built-in shapes: `circle`, `ring`, `square`, `diamond`, `triangle`, `star`, `sta
 
 **Images:** PNGs with transparency use their alpha. Fully opaque images are read as dark-on-light
 artwork (black = charge), so scanned or hand-drawn engravings work as they are.
+
+## The carving window
+
+Two tabs (top right), as in Heraldry Mod. **Basic** builds a carving from dropdowns: background, which sides get a
+border (tick boxes), the border's style (with strands, line count and width where they apply, and the rune text for an
+inscription), one charge (built-in shapes, then your pictures; item icons are left out of the list, so name them in Advanced), how many and how they're arranged,
+where they go, and relief / incised / sunken. The text the choices make is shown underneath, so the words can be
+learnt. **Advanced** is the text itself, for anything more (several charge groups, overlays, rotations). Both tabs make
+the same text. Opening a piece that's already carved, or writing in Advanced, dims the Basic choices: they don't
+describe that carving, and changing one replaces it. The window opens on the tab you used last (config `Editor.Mode`).
 
 ## Sides
 

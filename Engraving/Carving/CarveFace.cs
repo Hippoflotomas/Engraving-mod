@@ -30,6 +30,16 @@ namespace Engraving.Carving
         /// (2026-10-29: one affine map smeared and striped stone_wall_4x2, whose texture is a patchwork).
         /// </summary>
         public float[] TriFaceUV, TriOrigUV, TriDepth;
+        /// <summary>
+        /// Per face triangle: how squarely it faces out (1 = straight at the viewer). Joints and bevels between
+        /// stones face partly sideways; their texture is a different part of the atlas, so they only supply the
+        /// wall texture where nothing squarer covers (2026-10-31: they streaked carvings on stone_wall_4x2).
+        /// </summary>
+        public float[] TriFacing;
+        /// <summary>Unique per face layout (shared by the copies bound to other walls of the prefab): a cache key.</summary>
+        public int LayoutId;
+        static int _nextLayout;
+        public static int NextLayoutId() => System.Threading.Interlocked.Increment(ref _nextLayout);
 
         public CarveFace BoundTo(MeshRenderer r)
         {
@@ -54,13 +64,21 @@ namespace Engraving.Carving
         }
 
         static readonly Dictionary<string, Variant> Cache = new Dictionary<string, Variant>();
+        /// <summary>The game's mesh each carved mesh was made from.</summary>
+        static readonly Dictionary<Mesh, Mesh> Originals = new Dictionary<Mesh, Mesh>();
+
+        /// <summary>
+        /// The game's own mesh behind a renderer's mesh: a piece already showing a carving holds one of ours
+        /// (2026-10-31: the back of a carved Grausten wall was measured from the front's carved mesh).
+        /// </summary>
+        public static Mesh OriginalOf(Mesh m) => m != null && Originals.TryGetValue(m, out var o) ? o : m;
 
         public static Variant For(IList<CarveFace> faces)
         {
             var ordered = faces.OrderByDescending(f => f.Side).ToList();
             var first = ordered[0];
             string key = first.Original.GetInstanceID() + "|" + string.Join(",", ordered.Select(f => f.Side + ":" +
-                System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(f.FaceTris)));
+                f.LayoutId));
             if (Cache.TryGetValue(key, out var v)) return v;
 
             var s = first.Snap;
@@ -111,6 +129,7 @@ namespace Engraving.Carving
             m.RecalculateTangents();
             m.UploadMeshData(true);
             v.Mesh = m;
+            Originals[m] = first.Original;
             Cache[key] = v;
             return v;
         }
@@ -208,7 +227,7 @@ namespace Engraving.Carving
             float outer = float.NegativeInfinity, inner = float.PositiveInfinity;
             foreach (var r in renderers)
             {
-                var mesh = r.GetComponent<MeshFilter>().sharedMesh;
+                var mesh = CarvedMeshes.OriginalOf(r.GetComponent<MeshFilter>().sharedMesh);
                 MeshSnapshot snap;
                 try { snap = MeshReader.Read(mesh); }
                 catch (Exception e) { Jotunn.Logger.LogWarning($"[Engraving] Mesh '{mesh.name}' unreadable: {e.Message}"); continue; }
@@ -292,6 +311,7 @@ namespace Engraving.Carving
             var triFace = new float[nt * 6];
             var triOrig = new float[nt * 6];
             var triDepth = new float[nt];
+            var triFacing = new float[nt];
             var fit = new List<(Vector2 face, Vector2 orig)>();
             for (int t = 0; t < nt; t++)
             {
@@ -308,13 +328,17 @@ namespace Engraving.Carving
                     z += p.z * model.Side;
                 }
                 triDepth[t] = z / 3f;
+                Vector3 a = toRoot.MultiplyPoint3x4(s.Vertices[faceTris[t * 3]]);
+                Vector3 b = toRoot.MultiplyPoint3x4(s.Vertices[faceTris[t * 3 + 1]]);
+                Vector3 c = toRoot.MultiplyPoint3x4(s.Vertices[faceTris[t * 3 + 2]]);
+                triFacing[t] = Vector3.Cross(b - a, c - a).normalized.z * model.Side;
             }
 
             var face = new CarveFace
             {
-                Renderer = r, Original = r.GetComponent<MeshFilter>().sharedMesh, Side = model.Side, SourceSlot = sourceSlot,
+                Renderer = r, Original = CarvedMeshes.OriginalOf(r.GetComponent<MeshFilter>().sharedMesh), Side = model.Side, SourceSlot = sourceSlot,
                 Triangles = nt, FaceTris = faceTris.ToArray(), Snap = s,
-                TriFaceUV = triFace, TriOrigUV = triOrig, TriDepth = triDepth,
+                TriFaceUV = triFace, TriOrigUV = triOrig, TriDepth = triDepth, TriFacing = triFacing, LayoutId = CarveFace.NextLayoutId(),
             };
             FitUvMap(fit, out face.MapU, out face.MapV);
             return face;

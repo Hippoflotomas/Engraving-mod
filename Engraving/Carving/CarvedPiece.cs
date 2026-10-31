@@ -3,6 +3,8 @@ using System.Linq;
 using HarmonyLib;
 using UnityEngine;
 
+using Engraving.Pictures;
+
 namespace Engraving.Carving
 {
     /// <summary>
@@ -50,6 +52,9 @@ namespace Engraving.Carving
         readonly Layer _front = new Layer { Side = 1 }, _back = new Layer { Side = -1 };
         /// <summary>Each touched renderer's own mesh and materials, to put back.</summary>
         readonly Dictionary<MeshRenderer, (Mesh mesh, Material[] mats)> _originals = new Dictionary<MeshRenderer, (Mesh, Material[])>();
+        /// <summary>The carved mesh each renderer was given, to notice when something else swaps it.</summary>
+        readonly Dictionary<MeshRenderer, Mesh> _shown = new Dictionary<MeshRenderer, Mesh>();
+        static readonly HashSet<string> SwapReported = new HashSet<string>();
 
         Layer LayerFor(int side) => side > 0 ? _front : _back;
 
@@ -58,6 +63,8 @@ namespace Engraving.Carving
             _nview = GetComponent<ZNetView>();
             _piece = GetComponent<Piece>();
             if (_nview == null || !_nview.IsValid()) { enabled = false; return; } // placement ghost
+            // a dedicated server keeps the scripts and relays pictures, but draws nothing
+            if (SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Null) { enabled = false; return; }
             _prefab = Utils.GetPrefabName(gameObject);
             Refresh();
             InvokeRepeating(nameof(Refresh), 1f, 1f);
@@ -124,6 +131,7 @@ namespace Engraving.Carving
             if (zdo == null) return;
             StartWaitingFaces(_front);
             StartWaitingFaces(_back);
+            CheckShown();
             if (zdo.DataRevision == _lastRevision && _lastGeneration == Generation) return;
             _lastRevision = zdo.DataRevision;
             _lastGeneration = Generation;
@@ -140,14 +148,14 @@ namespace Engraving.Carving
             var model = CarveModel.For(gameObject, _prefab, side);
             if (model == null) { Clear(layer); layer.Status = "no face on this side"; return; }
             float ppm = EngravingPlugin.PixelsPerMetre.Value;
-            var pictures = HeraldryCharges.Prepare(text, out int waiting);
+            var pictures = EngravingCharges.Prepare(text, out int waiting);
             string icons = ItemIconCharges.Prepare(text, out int iconsWaiting);
             string key = CarvingJobs.KeyFor(text, model.Width, model.Height, ppm) + "|" + side + "|" +
-                         EngravingPlugin.CarveDepth.Value + "|" + EngravingPlugin.AlbedoMaxSize.Value + "|" +
-                         HeraldryCharges.KeyOf(pictures) + "|" + icons;
+                         EngravingPlugin.CarveDepth.Value + "|" + EngravingPlugin.AlbedoMaxSize.Value + "|" + EngravingPlugin.KeepWallBumps.Value + "|" +
+                         EngravingCharges.KeyOf(pictures) + "|" + icons;
             if (key == layer.Key) return;
 
-            layer.Status = "drawing" + (waiting > 0 ? $" ({waiting} picture(s) still to come from Heraldry Mod)" : "") +
+            layer.Status = "drawing" + (waiting > 0 ? $" ({waiting} picture(s) not here yet (engrave_pending))" : "") +
                            (iconsWaiting > 0 ? $" ({iconsWaiting} item icon(s) reading)" : "");
             int token = ++layer.Token;
             CarvingJobs.Request(text, model.Width, model.Height, ppm, pictures, carving =>
@@ -218,7 +226,7 @@ namespace Engraving.Carving
                 UpdateStatus(layer);
             }
 
-            layer.TextureKeys.Add(CarvingTextures.AcquireNormal(carving, EngravingPlugin.CarveDepth.Value, t => { normal = t; Ready(); }));
+            layer.TextureKeys.Add(CarvingTextures.AcquireSurfaceNormal(carving, EngravingPlugin.CarveDepth.Value, source, face, t => { normal = t; Ready(); }));
             layer.TextureKeys.Add(CarvingTextures.AcquireAlbedo(carving, source, face, t => { albedo = t; Ready(); }));
         }
 
@@ -226,7 +234,7 @@ namespace Engraving.Carving
         {
             if (!_originals.TryGetValue(r, out var o))
             {
-                o = (r.GetComponent<MeshFilter>().sharedMesh, r.sharedMaterials);
+                o = (CarvedMeshes.OriginalOf(r.GetComponent<MeshFilter>().sharedMesh), r.sharedMaterials);
                 _originals[r] = o;
             }
             return o;
@@ -246,6 +254,7 @@ namespace Engraving.Carving
                 filter.sharedMesh = original.mesh;
                 r.sharedMaterials = original.mats;
                 _originals.Remove(r);
+                _shown.Remove(r);
                 return;
             }
             var variant = CarvedMeshes.For(ready.Select(x => x.face).ToList());
@@ -255,6 +264,43 @@ namespace Engraving.Carving
             foreach (var (face, mat) in ready) mats[variant.SlotOf[face.Side]] = mat;
             filter.sharedMesh = variant.Mesh;
             r.sharedMaterials = mats;
+            _shown[r] = variant.Mesh;
+        }
+
+        /// <summary>
+        /// Something other than this mod put a different mesh on a carved renderer. With our extra material still
+        /// on it, Unity draws the whole mesh a second time in the carving's material at the mesh's own UVs: the
+        /// carving smeared over both sides (2026-10-31, Grausten wall). Put the carved mesh back if it's the same
+        /// model, otherwise drop the carving's materials; and say so in the log, once per piece type.
+        /// </summary>
+        void CheckShown()
+        {
+            if (_shown.Count == 0) return;
+            foreach (var r in _shown.Keys.ToList())
+            {
+                if (r == null) { _shown.Remove(r); continue; }
+                var filter = r.GetComponent<MeshFilter>();
+                if (filter == null) continue;
+                var now = filter.sharedMesh;
+                var want = _shown[r];
+                if (now == want) continue;
+                if (SwapReported.Add(_prefab + "/" + r.name))
+                    Jotunn.Logger.LogWarning($"[Engraving] '{_prefab}': renderer '{PathTo(r.transform)}' was switched from our '{want?.name}' to " +
+                                             $"'{now?.name}' (readable {now?.isReadable}, {now?.subMeshCount} submeshes) by something else; " +
+                                             $"{r.sharedMaterials.Length} materials on it.");
+                var original = Original(r);
+                if (now != null && CarvedMeshes.OriginalOf(now) == original.mesh)
+                {
+                    Apply(r);   // the same model came back: show the carving on it again
+                }
+                else
+                {
+                    // a different model: carve nothing on it rather than smear the carving over it
+                    _originals[r] = (now, original.mats);
+                    r.sharedMaterials = original.mats;
+                    _shown.Remove(r);
+                }
+            }
         }
 
         static Material MakeMaterial(Material source, Texture2D albedo, Texture2D normal)
@@ -306,6 +352,127 @@ namespace Engraving.Carving
             var layer = LayerFor(side);
             string text = GetText(side);
             return (text.Length == 0 ? "none" : $"{text.Length} chars") + $"; {layer.Status}";
+        }
+
+        /// <summary>
+        /// For engrave_dump: writes what each carved renderer shows (colour and normal textures, the face's
+        /// triangles drawn over the colour, and a report) to <paramref name="dir"/>. Returns the number of files.
+        /// </summary>
+        internal int Dump(string dir)
+        {
+            System.IO.Directory.CreateDirectory(dir);
+            int files = 0;
+            var report = new System.Text.StringBuilder();
+            report.AppendLine($"piece '{_prefab}' at {transform.position}");
+            foreach (var layer in new[] { _front, _back })
+            {
+                string side = layer.Side > 0 ? "front" : "back";
+                report.AppendLine($"== {side} (+Z is front): {layer.Status}");
+                report.AppendLine("script:\n" + GetText(layer.Side));
+                var model = layer.Model;
+                if (model == null) continue;
+                report.AppendLine($"model: {model.Note}; bounds x {model.Bounds.xMin:0.000}..{model.Bounds.xMax:0.000}, y {model.Bounds.yMin:0.000}..{model.Bounds.yMax:0.000}");
+                if (layer.Carving?.Map != null) report.AppendLine($"heightmap {layer.Carving.Map.Width} x {layer.Carving.Map.Height}");
+                int n = 0;
+                foreach (var face in model.Faces)
+                {
+                    n++;
+                    var r = face.Renderer;
+                    if (r == null) continue;
+                    var filter = r.GetComponent<MeshFilter>();
+                    var shown = filter != null ? filter.sharedMesh : null;
+                    report.AppendLine($"-- face {n}: renderer '{PathTo(r.transform)}' active {r.gameObject.activeInHierarchy} enabled {r.enabled}");
+                    report.AppendLine($"   original mesh '{face.Original?.name}' readable {face.Original?.isReadable} verts {face.Original?.vertexCount}; showing '{shown?.name}'; slot {face.SourceSlot}; {face.Triangles} tris");
+                    report.AppendLine($"   renderer local scale {r.transform.lossyScale}, LOD group {(r.GetComponentInParent<LODGroup>() != null)}");
+                    var own = Original(r).mats;
+                    var src = face.SourceSlot < own.Length ? own[face.SourceSlot] : own.FirstOrDefault();
+                    if (src != null)
+                    {
+                        var mt = src.HasProperty("_MainTex") ? src.mainTexture : null;
+                        report.AppendLine($"   material '{src.name}' shader '{src.shader?.name}' keywords [{string.Join(" ", src.shaderKeywords)}]");
+                        if (mt != null) report.AppendLine($"   _MainTex '{mt.name}' {mt.width}x{mt.height} filter {mt.filterMode} wrap {mt.wrapMode} scale {src.mainTextureScale} offset {src.mainTextureOffset}");
+                    }
+                    for (int t = 0; t < face.Triangles; t++)
+                    {
+                        int b = t * 6;
+                        var f = face.TriFaceUV; var o = face.TriOrigUV;
+                        report.AppendLine($"   tri {t}: facing {(face.TriFacing != null ? face.TriFacing[t] : 1):0.00} depth {face.TriDepth[t]:0.000} " +
+                                          $"face ({f[b]:0.000},{f[b + 1]:0.000}) ({f[b + 2]:0.000},{f[b + 3]:0.000}) ({f[b + 4]:0.000},{f[b + 5]:0.000}) " +
+                                          $"orig ({o[b]:0.000},{o[b + 1]:0.000}) ({o[b + 2]:0.000},{o[b + 3]:0.000}) ({o[b + 4]:0.000},{o[b + 5]:0.000})");
+                    }
+                    if (!layer.Ready.TryGetValue(r, out var ready) || ready.mat == null) { report.AppendLine("   (no textures shown)"); continue; }
+                    string stem = System.IO.Path.Combine(dir, $"{_prefab}_{side}_{n}_{r.name}");
+                    var albedo = ready.mat.HasProperty("_MainTex") ? ready.mat.mainTexture : null;
+                    var normal = ready.mat.HasProperty("_BumpMap") ? ready.mat.GetTexture("_BumpMap") : null;
+                    var col = ReadBack(albedo, false);
+                    if (col != null)
+                    {
+                        System.IO.File.WriteAllBytes(stem + "_colour.png", col.EncodeToPNG()); files++;
+                        DrawTriangles(col, face);
+                        System.IO.File.WriteAllBytes(stem + "_triangles.png", col.EncodeToPNG()); files++;
+                        Destroy(col);
+                    }
+                    var nor = ReadBack(normal, true);
+                    if (nor != null) { System.IO.File.WriteAllBytes(stem + "_normal.png", nor.EncodeToPNG()); files++; Destroy(nor); }
+                }
+            }
+            report.AppendLine("== every renderer now");
+            foreach (var r in GetComponentsInChildren<MeshRenderer>(true))
+            {
+                var m = r.GetComponent<MeshFilter>()?.sharedMesh;
+                report.AppendLine($"   '{PathTo(r.transform)}' active {r.gameObject.activeInHierarchy} enabled {r.enabled}: mesh '{m?.name}' " +
+                                  $"({m?.subMeshCount} submeshes, readable {m?.isReadable}), materials [{string.Join(", ", r.sharedMaterials.Select(x => x != null ? x.name : "null"))}]" +
+                                  (_shown.TryGetValue(r, out var want) ? $"; we gave it '{want?.name}'" : ""));
+            }
+            System.IO.File.WriteAllText(System.IO.Path.Combine(dir, $"{_prefab}_report.txt"), report.ToString());
+            return files + 1;
+        }
+
+        string PathTo(Transform t)
+        {
+            var parts = new List<string>();
+            for (var x = t; x != null && x != transform; x = x.parent) parts.Add(x.name);
+            parts.Reverse();
+            return string.Join("/", parts);
+        }
+
+        static Texture2D ReadBack(Texture tex, bool linear)
+        {
+            if (tex == null) return null;
+            var rt = RenderTexture.GetTemporary(tex.width, tex.height, 0, RenderTextureFormat.ARGB32,
+                linear ? RenderTextureReadWrite.Linear : RenderTextureReadWrite.sRGB);
+            var prev = RenderTexture.active;
+            Graphics.Blit(tex, rt);
+            RenderTexture.active = rt;
+            var copy = new Texture2D(tex.width, tex.height, TextureFormat.RGBA32, false, linear);
+            copy.ReadPixels(new Rect(0, 0, tex.width, tex.height), 0, 0);
+            copy.Apply();
+            RenderTexture.active = prev;
+            RenderTexture.ReleaseTemporary(rt);
+            return copy;
+        }
+
+        /// <summary>Outlines the face triangles: square-on ones yellow, bevels and joints red.</summary>
+        static void DrawTriangles(Texture2D tex, CarveFace face)
+        {
+            int w = tex.width, h = tex.height;
+            for (int t = 0; t < face.Triangles; t++)
+            {
+                var f = face.TriFaceUV;
+                var c = face.TriFacing == null || face.TriFacing[t] >= 0.87f ? Color.yellow : Color.red;
+                for (int k = 0; k < 3; k++)
+                {
+                    int a = t * 6 + k * 2, b = t * 6 + (k + 1) % 3 * 2;
+                    float x0 = f[a] * w, y0 = f[a + 1] * h, x1 = f[b] * w, y1 = f[b + 1] * h;
+                    int steps = Mathf.CeilToInt(Mathf.Max(Mathf.Abs(x1 - x0), Mathf.Abs(y1 - y0))) + 1;
+                    for (int i = 0; i <= steps; i++)
+                    {
+                        int x = Mathf.RoundToInt(Mathf.Lerp(x0, x1, i / (float)steps)), y = Mathf.RoundToInt(Mathf.Lerp(y0, y1, i / (float)steps));
+                        if (x >= 0 && x < w && y >= 0 && y < h) tex.SetPixel(x, y, c);
+                    }
+                }
+            }
+            tex.Apply();
         }
 
         // ------------------------------------------------------------ hover and E

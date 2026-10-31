@@ -20,6 +20,37 @@ namespace Engraving.Preview
     /// </summary>
     public static class Program
     {
+        /// <summary>Builds every basic-mode combination and checks it parses cleanly and its charge resolves.</summary>
+        static int BasicSelfTest(List<string> chargeDirs)
+        {
+            var lib = new ChargeLibrary();
+            foreach (var d in chargeDirs) lib.AddSource(new FolderChargeSource(d));
+            var extra = new List<BasicCarving.ChargeChoice> { BasicCarving.Named("My Banner", "My \"Banner\" #2") };
+            int n = 0, bad = 0;
+            var rendered = new HashSet<string>();
+            foreach (var b in BasicCarving.Combinations(extra))
+            {
+                n++;
+                string text = b.Build();
+                var parsed = Parser.Parse(text);
+                if (parsed.Diagnostics.Count > 0)
+                {
+                    if (bad++ < 20) Console.WriteLine("PROBLEM:\n" + text + "\n  " + string.Join("\n  ", parsed.Diagnostics));
+                    continue;
+                }
+                // render one of each charge (twice for plurals) and each border style once
+                string key = (b.HasCharge ? b.Charge.Label + b.Count : "") + "|" + (b.HasBorder ? b.BorderStyle + b.Width : "");
+                if (!rendered.Add(key) || (b.HasCharge && b.Count > 2) || b.Charge.One.StartsWith("\"")) continue;
+                var result = EngravingRenderer.Render(parsed.Spec, lib, new RenderOptions { Width = 1, Height = 0.5f, PixelsPerMetre = 48 });
+                if (result.Diagnostics.Count > 0)
+                {
+                    if (bad++ < 20) Console.WriteLine("RENDER:\n" + text + "\n  " + string.Join("\n  ", result.Diagnostics));
+                }
+            }
+            Console.WriteLine($"basic self-test: {n} combinations, {rendered.Count} rendered, {bad} problem(s)");
+            return bad == 0 ? 0 : 1;
+        }
+
         public static int Main(string[] args)
         {
             var scripts = new List<string>();
@@ -40,6 +71,7 @@ namespace Engraving.Preview
                         opt.Height = float.Parse(p[1], System.Globalization.CultureInfo.InvariantCulture);
                         break;
                     }
+                    case "--basic-selftest": return BasicSelfTest(chargeDirs);
                     case "-h": case "--help":
                         Console.WriteLine("Engraving.Preview [-o outdir] [-c chargesdir]... [--ppm N] [--size WxH] script.eng...");
                         return 0;
