@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using Engraving.Core.Charges;
 using Engraving.Core.Geometry;
 using Engraving.Core.Imaging;
@@ -16,6 +17,9 @@ namespace Engraving.Preview
     ///   -c DIR          extra charge image folder (repeatable; searched in order after built-ins)
     ///   --ppm N         pixels per metre (default 256)
     ///   --size WxH      override panel size in metres, e.g. 2x2
+    ///   --poses DIR     extra pose files (*.json; an EngravingPoses folder beside the script is read too)
+    ///   --write-poses F write the built-in poses to F as an example, and stop
+    ///   --record        print each script as the mod stores it (with "#pose:" lines for non-built-in poses), and stop
     /// Writes NAME.height.png (16-bit heightmap) and NAME.preview.png (lit wood preview).
     /// </summary>
     public static class Program
@@ -51,10 +55,34 @@ namespace Engraving.Preview
             return bad == 0 ? 0 : 1;
         }
 
+        /// <summary>"trophies=troll,deer;materials=copper;weapons=sword:30,bow:22;shield": a pretend player, to fill scenes.</summary>
+        static Engraving.Core.Language.SceneProgress ReadProgress(string spec)
+        {
+            var p = new Engraving.Core.Language.SceneProgress();
+            foreach (var part in spec.Split(';'))
+            {
+                var kv = part.Split('=');
+                var items = kv.Length > 1 ? kv[1].Split(',').Where(x => x.Length > 0) : Enumerable.Empty<string>();
+                switch (kv[0].Trim())
+                {
+                    case "trophies": foreach (var t in items) p.Trophies.Add(Engraving.Core.Language.Scene.FigureForTrophy(t) ?? t); break;
+                    case "materials": foreach (var m in items) p.Materials.Add(Engraving.Core.Language.Scene.MaterialFor(m) ?? m); break;
+                    case "weapons":
+                        foreach (var w in items) { var a = w.Split(':'); p.Weapons[a[0]] = a.Length > 1 ? float.Parse(a[1], System.Globalization.CultureInfo.InvariantCulture) : 1; }
+                        break;
+                    case "shield": p.Shield = true; break;
+                }
+            }
+            return p;
+        }
+
         public static int Main(string[] args)
         {
             var scripts = new List<string>();
             var chargeDirs = new List<string>();
+            var poseDirs = new List<string>();
+            bool record = false;
+            Engraving.Core.Language.SceneProgress progress = null;
             string outDir = null;
             var opt = new RenderOptions();
             for (int i = 0; i < args.Length; i++)
@@ -63,6 +91,10 @@ namespace Engraving.Preview
                 {
                     case "-o": outDir = args[++i]; break;
                     case "-c": chargeDirs.Add(args[++i]); break;
+                    case "--poses": poseDirs.Add(args[++i]); break;
+                    case "--record": record = true; break;
+                    case "--progress": progress = ReadProgress(args[++i]); break;
+                    case "--write-poses": File.WriteAllText(args[++i], Engraving.Core.Figures.PoseLibrary.BuiltinJson); Console.WriteLine("wrote " + args[i]); return 0;
                     case "--ppm": opt.PixelsPerMetre = float.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture); break;
                     case "--size":
                     {
@@ -84,6 +116,19 @@ namespace Engraving.Preview
                 return 1;
             }
 
+            // poses: the built-in ones, then *.json in each --poses folder and an EngravingPoses folder beside the first script
+            if (scripts.Count > 0) poseDirs.Add(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(scripts[0])), "EngravingPoses"));
+            var poseFiles = poseDirs.Where(Directory.Exists).SelectMany(d => Directory.GetFiles(d, "*.json").OrderBy(f => f))
+                .Select(f => (Path.GetFileName(f), File.ReadAllText(f))).ToList();
+            foreach (var problem in Engraving.Core.Figures.PoseLibrary.Load(poseFiles)) Console.WriteLine("poses: " + problem);
+            if (poseFiles.Count > 0) Console.WriteLine($"poses: {poseFiles.Count} file(s), {Engraving.Core.Figures.PoseLibrary.All.Count()} pose(s)");
+
+            if (record)
+            {
+                foreach (var path in scripts) Console.WriteLine(Engraving.Core.Figures.PoseLibrary.Record(File.ReadAllText(path)));
+                return 0;
+            }
+
             // default search: an Engravings folder then a Charges folder beside the script, like the mod
             int errors = 0;
             foreach (var path in scripts)
@@ -94,7 +139,15 @@ namespace Engraving.Preview
                 lib.AddSource(new FolderChargeSource(Path.Combine(dir, "Engravings")));
                 lib.AddSource(new FolderChargeSource(Path.Combine(dir, "Charges")));
 
-                var parsed = Parser.Parse(File.ReadAllText(path));
+                string source = File.ReadAllText(path);
+                if (progress != null)
+                {
+                    var problems = new List<string>();
+                    source = Engraving.Core.Language.Scene.Fill(source, progress, problems);
+                    Console.WriteLine($"{Path.GetFileName(path)} filled: {source.Trim()}");
+                    foreach (var pr in problems) Console.WriteLine("  scene: " + pr);
+                }
+                var parsed = Parser.Parse(source);
                 foreach (var d in parsed.Diagnostics) Console.WriteLine($"{Path.GetFileName(path)}: {d}");
                 if (parsed.HasErrors) errors++;
 

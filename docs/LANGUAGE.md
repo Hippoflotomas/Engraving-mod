@@ -119,6 +119,110 @@ Built-in shapes: `circle`, `ring`, `square`, `diamond`, `triangle`, `star`, `sta
 **Images:** PNGs with transparency use their alpha. Fully opaque images are read as dark-on-light
 artwork (black = charge), so scanned or hand-drawn engravings work as they are.
 
+## Figures (first version)
+
+```
+center: a viking striking, holding an axe and a shield
+left: a warrior guarding, holding a sword and a shield
+right: a viking walking, holding a spear, facing left
+```
+
+A **figure** (`viking`, `warrior`, `man`, `figure`, `person`, bearded; or `shieldmaiden`, `woman`, `maiden`, with a
+braid and a longer tunic) is drawn side-on, facing right (`facing left` mirrors
+it), as a solid shape whose detail comes from thin cut lines where its parts overlap, plus a belt, boot tops, a helmet
+with a nasal guard, and a beard.
+
+**The game's humanoid enemies** use the same rig with their own bodies: `greydwarf`, `troll` (about twice a Viking's
+height), `skeleton`, `draugr`, `fuling` (or `goblin`), `fenring` (or `werewolf`). They take the same poses and can hold
+the same things, plus a `club`.
+
+**Poses:** `standing` (default), `walking`, `running`, `striking` (weapon raised overhead), `thrusting`, `guarding`
+(shield up, weapon ready), `triumphant` (arms raised).
+
+**Your own poses.** Poses are JSON files in `Documents\ValheimHeraldryMod\EngravingPoses` (beside `Engravings`). The
+built-in poses are written there as `builtin-poses.json.example`, with notes on every angle: copy it to a `.json`
+file, change or add poses, and run `engrave_reload`. A pose with a built-in pose's name replaces it for your new
+carvings. Each pose has a `name`, other `words` that ask for it, `lean` and `head`, and angles for `nearArm`
+(`upper`, `fore`, `grip`), `farArm` (the same, plus `inFront`), `nearLeg` and `farLeg` (`thigh`, `shin`, `foot`).
+Limb angles are degrees from straight down, positive swinging forward (90 = forward, 180 = straight up).
+
+Everyone sees the same figure: a carving records any pose that isn't built in (a hidden `#pose:` line), so other
+players don't need your pose file. The preview tool reads poses too (`--poses DIR`, or an `EngravingPoses` folder beside
+the script), `--write-poses FILE` writes the built-in ones out, and `--record` shows a script as the mod stores it.
+
+**Holding:** `holding` (or `wielding`, `carrying`, `with`) then any of `axe`, `sword`, `spear`, `hammer`, `club`, `shield`,
+joined by `and`. The first weapon goes in the near hand and a shield in the far hand, with that arm drawn over the
+shield; a second weapon goes in the far hand.
+
+A lone figure fills its cell. Several figures in one carving share one size (the smallest any of them would get), so a
+Viking is the same height whatever he holds, and figures in the same row stand on one ground line.
+
+## Animals
+
+```
+left: a wolf howling
+center: a deer grazing
+right: a boar charging, facing left
+```
+
+Four-legged animals share one rig and differ only in their body measurements and features: `wolf`, `deer` (or
+`stag`), `boar` (or `pig`), `lox`. Antlers, tusks, a bristling mane and shaggy fur come from the species.
+
+**Poses:** `standing` (default), `walking`, `running` (`galloping`, `fleeing`), `charging`, `grazing`, `howling`,
+`leaping`. They live in the same pose files as the humanoid ones, marked `"rig": "quadruped"` (see the example file
+for their angles: legs as `nearFore`/`farFore` `upper`, `lower`, `foot` and `nearHind`/`farHind` `thigh`, `shin`,
+`foot`; `body`, `neck`, `head`, `tail`, `tailCurl`).
+
+Animals and people in one carving share one scale, so they keep their true relative sizes: a lox dwarfs a Viking.
+
+## Every creature
+
+Figures come from six rigs. Each creature is a block of body data on its rig (sizes are the game's, so a carving
+with several keeps them in proportion). Names in brackets also work.
+
+| rig | creatures | poses |
+|---|---|---|
+| humanoid | viking (warrior, man), shieldmaiden (woman), greydwarf (greyling), greydwarfbrute (brute), greydwarfshaman (shaman), troll, skeleton, draugr, charred (twitcher), fuling (goblin), berserker (fulingberserker), fulingshaman, dverger (dwarf), surtling (frysling, imp), fenring (werewolf), golem (stonegolem), elder, barka, yagluth, morgen, ghost (spirit), wraith, odin (wanderer), bogwitch (witch), valkyrie, fallenwarrior, jotun (giant), jotunwitch | standing, walking, running, striking, thrusting, guarding, triumphant |
+| quadruped | wolf, deer (stag), boar (pig), lox, calf, bear (bjorn), unbjorn, moose (elk), hare, eikthyr, ulv, seal, neck (lizard) | standing, walking, running, charging, grazing, howling, leaping |
+| flyer | raven (crow, bird), vulture, chicken (hen), bat, drake (hatchling), dragon (moder, fader), deathsquito (mosquito), seeker | flying, gliding, diving, standing (perched) |
+| serpent | serpent (snake), bonemaw, leech | swimming, striking |
+| blob | blob (ooze), oozer, growth (tar), bonemass, gjall, abomination | standing, jumping |
+| insect | tick, seekersoldier (soldier), queen | standing, walking, attacking |
+
+Items to hold (humanoids): `axe`, `sword`, `spear`, `hammer`, `club`, `staff`, `bow`, `pickaxe`, `shield`, and
+`thumbsup` / `thumbsdown` (a hand, not an item). More humanoid poses: aiming (a bow), throwing (a spear), judging.
+
+Things that stand still: `tree` (beech), `pine`, `birch`, `oak`, `rock` (stone, boulder), `copper`, `tin`, `iron`
+(scrap pile), `silver`, `obsidian`, `flametal`; a creature's trophy (`a troll trophy`, `the trophy of the elder`)
+and a Forsaken's sacrificial stone (`the altar of eikthyr`).
+
+## Scenes
+
+`a scene of war`, `a scene of hunting`, `a scene of gathering` or `a scene of victory` fills the field with a Viking
+and a counterpart taken from your own journey, so a hallway can be carved panel by panel as you go:
+
+| scene | the Viking | opposite him |
+|---|---|---|
+| war | strikes with his best melee weapon (and shield, if he has one) | the furthest-along creature whose trophy you've taken, facing him |
+| hunting | shoots his bow or throws his spear, running behind | the furthest-along game animal whose trophy you've taken, fleeing |
+| gathering | swings his axe or pickaxe | the furthest-along material you know and have the tool for |
+| victory | arms raised, the trophy of the last Forsaken you beat above him | that Forsaken's sacrificial stone |
+
+Nothing is left to chance: when you carve, the open choices are made from your trophies (every one you've ever taken,
+not what you carry), the materials you know and the weapons you carry (most damage wins; the one equipped breaks a
+tie), and written into the carving: `a scene of war` is stored as `a scene of war against a troll, the viking holding
+a sword and a shield`. Everyone then sees the same scene, and it doesn't change when you get better gear.
+
+You can name any part yourself: `a scene of war against a draugr`, `a scene of hunting a deer, the shieldmaiden
+holding a spear`, `a scene of gathering copper`, `a scene of victory over the elder`, `bare-handed`. Naming something
+you haven't earned (a trophy you've never taken, a material you've never found) stops the carving. A victory before
+any Forsaken has fallen isn't an error: the Viking celebrates anyway, and Odin gives him a thumbs down.
+
+Creatures keep their true sizes against each other, shrunk where needed so the Viking isn't lost beside a dragon or a
+tree. A ground line runs across the bottom of the field, edge to edge, so a row of scene panels shares one ground;
+`without ground` leaves it off. The background, borders, `incised` / `sunken` and other charges all still apply. One
+scene per carving.
+
 ## The carving window
 
 Two tabs (top right), as in Heraldry Mod. **Basic** builds a carving from dropdowns: background, which sides get a
@@ -140,5 +244,4 @@ carve. Pieces that use E themselves (doors, gates) are carved with Shift+E.
 
 ## Not built yet
 
-- Posable rigged figures (humanoid, quadruped, bird, serpent, dragon)
 - Interior detail from image shading (only silhouettes are used so far)

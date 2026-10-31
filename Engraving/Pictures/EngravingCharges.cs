@@ -315,7 +315,9 @@ namespace Engraving.Pictures
         public static string Visible(string script)
         {
             if (string.IsNullOrEmpty(script)) return "";
-            var lines = script.Replace("\r\n", "\n").Split('\n').Where(l => !l.TrimStart().StartsWith(TailPrefix, StringComparison.OrdinalIgnoreCase));
+            // recorded poses ("#pose:") are hidden too
+            var lines = Core.Figures.PoseLibrary.WithoutTail(script).Replace("\r\n", "\n").Split('\n')
+                .Where(l => !l.TrimStart().StartsWith(TailPrefix, StringComparison.OrdinalIgnoreCase));
             return string.Join("\n", lines).TrimEnd();
         }
 
@@ -340,7 +342,7 @@ namespace Engraving.Pictures
         /// <summary>Picture charge names in a script (not built-in shapes), lower case, as written.</summary>
         static IEnumerable<string> PictureNames(string script) =>
             Parser.Parse(Visible(script)).Spec.Charges.Select(c => c.Name.ToLowerInvariant().Trim())
-                .Where(n => n.Length > 0 && !ChargeLibrary.Candidates(n).Any(c => BuiltinShapes.TryGet(c, out _)))
+                .Where(n => n.Length > 0 && !ChargeLibrary.Candidates(n).Any(c => BuiltinShapes.TryGet(c, out _)) && !Core.Figures.Catalog.IsFigure(n))
                 .Distinct();
 
         /// <summary>

@@ -223,13 +223,29 @@ namespace Engraving.Carving
 
         public static string NormalKey(Carving c, float depth) => "n|" + c.Key + "|" + depth;
 
+        /// <summary>engrave_testpattern: colour textures show their own UVs, to see how the game lays them on a wall.</summary>
+        public static bool TestPattern;
+
         public static string AlbedoKey(Carving c, Material source, CarveFace face)
         {
             var tex = MainTex(source);
             Vector2 sc = tex != null ? source.mainTextureScale : Vector2.one, of = tex != null ? source.mainTextureOffset : Vector2.zero;
             // the face layout: walls of the same prefab share the same triangle arrays
             int layout = face.LayoutId;
-            return "a|" + c.Key + "|" + (tex != null ? tex.GetInstanceID() : 0) + "|" + sc + of + "|" + layout + "|" + EngravingPlugin.AlbedoMaxSize.Value;
+            return "a|" + c.Key + "|" + (tex != null ? tex.GetInstanceID() : 0) + "|" + sc + of + "|" + layout + "|" + EngravingPlugin.AlbedoMaxSize.Value + (TestPattern ? "|test" : "") + "|tp" + TriplanarScale(source);
+        }
+
+        /// <summary>
+        /// The material's triplanar scale if it projects its texture from world position instead of the model's UVs
+        /// (black marble), else 0. Carvings on such walls switch the projection off and lay the texture flat over the
+        /// face at the same scale (2026-10-31: looked up by world position, the carving landed far off the face).
+        /// </summary>
+        public static float TriplanarScale(Material m)
+        {
+            if (m == null || !m.HasProperty("_TriplanarMap")) return 0f;
+            if (m.GetFloat("_TriplanarMap") < 0.5f && !m.IsKeywordEnabled("_TRIPLANARMAP_ON")) return 0f;
+            float s = m.HasProperty("_TriplanarScale") ? m.GetFloat("_TriplanarScale") : 1f;
+            return s > 0f ? s : 1f;
         }
 
         static Texture MainTex(Material m) => m != null && m.HasProperty("_MainTex") ? m.mainTexture : null;
@@ -263,6 +279,7 @@ namespace Engraving.Carving
             Vector2 sc = source.mainTextureScale, of = source.mainTextureOffset;   // the piece shader samples both with _MainTex's tiling
             float bumpScale = source.HasProperty("_BumpScale") ? source.GetFloat("_BumpScale") : 1f;
             bool point = bump.filterMode == FilterMode.Point;
+            float tp = TriplanarScale(source);
             string key = "nd|" + AlbedoKey(c, source, face) + "|" + bump.GetInstanceID() + "|" + depth + "|" + bumpScale;
             Acquire(key, ready, e =>
             {
@@ -276,8 +293,8 @@ namespace Engraving.Carving
                     CarvingJobs.Run(() =>
                     {
                         // same size as the colour texture, so both follow the wall's texture detail
-                        AlbedoSize(c, face, m.Item2 > 0 ? m.Item2 : b.Item2, m.Item3 > 0 ? m.Item3 : b.Item3, sc, maxSize, out aw, out ah);
-                        px = b.Item1 != null ? DetailNormalPixels(c, depth, aw, ah, b.Item1, b.Item2, b.Item3, bumpScale, face, sc, of, point)
+                        AlbedoSize(c, face, m.Item2 > 0 ? m.Item2 : b.Item2, m.Item3 > 0 ? m.Item3 : b.Item3, sc, maxSize, tp, out aw, out ah);
+                        px = b.Item1 != null ? DetailNormalPixels(c, depth, aw, ah, b.Item1, b.Item2, b.Item3, bumpScale, face, sc, of, point, tp)
                                              : ResampledNormal(c, depth, aw, ah);
                     }, () => CarvingJobs.Upload(() => Finish(key, MakeTexture(px, aw, ah, true, "Engraving_Normal"))));
                 }
@@ -298,6 +315,7 @@ namespace Engraving.Carving
                 // Valheim draws most walls with blocky (point-filtered) textures: blending their texels made the
                 // carved part look smeared next to the rest of the wall (2026-10-31, Grausten: 128² texture)
                 bool point = tex != null && tex.filterMode == FilterMode.Point;
+                float tp = TriplanarScale(source);
                 void Build()
                 {
                     var src = tex != null && SourcePixels.TryGetValue(tex, out var sp) ? sp : (null, 0, 0);
@@ -306,8 +324,8 @@ namespace Engraving.Carving
                     int aw = 0, ah = 0;
                     CarvingJobs.Run(() =>
                     {
-                        AlbedoSize(c, face, src.Item2, src.Item3, sc, maxSize, out aw, out ah);
-                        px = AlbedoPixels(c, aw, ah, src.Item1, src.Item2, src.Item3, face, sc, of, point);
+                        AlbedoSize(c, face, src.Item2, src.Item3, sc, maxSize, tp, out aw, out ah);
+                        px = AlbedoPixels(c, aw, ah, src.Item1, src.Item2, src.Item3, face, sc, of, point, tp);
                     }, () => CarvingJobs.Upload(() => Finish(key, MakeTexture(px, aw, ah, false, "Engraving_Albedo"))));
                 }
                 if (tex == null) Build();
@@ -425,13 +443,31 @@ namespace Engraving.Carving
         /// the face's u and v. Texels between stones (no triangle) get the carving alone.
         /// </summary>
         static Color32[] DetailNormalPixels(Carving c, float depth, int aw, int ah, Color32[] bump, int bw, int bh, float bumpScale,
-                                            CarveFace face, Vector2 scale, Vector2 offset, bool point)
+                                            CarveFace face, Vector2 scale, Vector2 offset, bool point, float triplanar)
         {
             var m = c.Map;
             float wm = m.Width / c.PixelsPerMetre, hm = m.Height / c.PixelsPerMetre;
             float du = 1f / aw, dv = 1f / ah;
             float su = depth / (2 * du * wm), sv = depth / (2 * dv * hm);
             var look = Lookup_(face, aw, ah);
+            if (triplanar > 0f)
+            {
+                // laid flat over the face: the texture's u and v are the face's
+                var flat = new Color32[aw * ah];
+                for (int ty = 0; ty < ah; ty++)
+                    for (int x = 0; x < aw; x++)
+                    {
+                        float u = (x + 0.5f) / aw, v = (ty + 0.5f) / ah;
+                        CarvingNormal(m, u, v, du, dv, su, sv, out float cx, out float cy, out float cz);
+                        var p = Sample(bump, bw, bh, u * wm * triplanar, v * hm * triplanar, point);
+                        float wx = (p.r / 255f * p.a / 255f * 2 - 1) * bumpScale, wy = (p.g / 255f * 2 - 1) * bumpScale;
+                        float wz = (float)Math.Sqrt(Math.Max(0, 1 - Math.Min(1, wx * wx + wy * wy)));
+                        float nx = cx + wx, ny = cy + wy, nz = cz * wz;
+                        float inv = 1f / (float)Math.Sqrt(nx * nx + ny * ny + nz * nz);
+                        flat[ty * aw + x] = new Color32(ToByte(nx * inv), ToByte(ny * inv), ToByte(nz * inv), 255);
+                    }
+                return flat;
+            }
 
             // per triangle: original tangent (+u) and bitangent (+v) directions on the face, in metres
             int nt = face.TriDepth.Length;
@@ -493,11 +529,17 @@ namespace Engraving.Carving
         /// The albedo's size: as sharp as the wall's own texture is on this face (so the carving doesn't look
         /// softer than the wall next to it), at least the heightmap's size, at most <paramref name="maxSize"/>.
         /// </summary>
-        static void AlbedoSize(Carving c, CarveFace face, int sw, int sh, Vector2 scale, int maxSize, out int aw, out int ah)
+        static void AlbedoSize(Carving c, CarveFace face, int sw, int sh, Vector2 scale, int maxSize, float triplanar, out int aw, out int ah)
         {
             int mw = c.Map.Width, mh = c.Map.Height;
             float k = 1f;
-            if (sw > 0 && face.TriFaceUV != null)
+            if (sw > 0 && triplanar > 0f)
+            {
+                // the texture laid flat at the triplanar scale: texels across the whole face
+                double wm = mw / c.PixelsPerMetre, hm = mh / c.PixelsPerMetre;
+                k = (float)(Math.Sqrt(sw * triplanar * wm * sh * triplanar * hm) / Math.Sqrt((double)mw * mh));
+            }
+            else if (sw > 0 && face.TriFaceUV != null)
             {
                 // texels of the source per unit of face UV area, from the triangles' areas in both spaces
                 double faceArea = 0, srcArea = 0;
@@ -532,13 +574,14 @@ namespace Engraving.Carving
         /// up the frontmost face triangle under it and reads the wall's texture at that triangle's own UVs, so
         /// patchwork textures (stone blocks) stay intact; texels no triangle covers use the fitted map.
         /// </summary>
-        static Color32[] AlbedoPixels(Carving c, int aw, int ah, Color32[] src, int sw, int sh, CarveFace face, Vector2 scale, Vector2 offset, bool point)
+        static Color32[] AlbedoPixels(Carving c, int aw, int ah, Color32[] src, int sw, int sh, CarveFace face, Vector2 scale, Vector2 offset, bool point, float triplanar)
         {
             var m = c.Map;
             int mw = m.Width, mh = m.Height;
+            float wmetres = mw / c.PixelsPerMetre, hmetres = mh / c.PixelsPerMetre;
 
             // original UV per texel, from the triangle covering it
-            var look = src != null ? Lookup_(face, aw, ah) : null;
+            var look = src != null && triplanar <= 0f ? Lookup_(face, aw, ah) : null;
 
             var plain = new Color32(150, 120, 90, 255);
             var px = new Color32[aw * ah];
@@ -550,7 +593,12 @@ namespace Engraving.Carving
                     float u = (x + 0.5f) / aw;
                     int i = ty * aw + x;
                     Color32 col = plain;
-                    if (src != null)
+                    if (src != null && triplanar > 0f)
+                    {
+                        // flat over the face at the wall's triplanar scale (the shader's projection is switched off)
+                        col = Sample(src, sw, sh, u * wmetres * triplanar, v * hmetres * triplanar, point);
+                    }
+                    else if (src != null)
                     {
                         float su, sv;
                         if (look.Has(i)) { su = look.U[i]; sv = look.V[i]; }
@@ -560,6 +608,14 @@ namespace Engraving.Carving
                             sv = face.MapV.x * u + face.MapV.y * v + face.MapV.z;
                         }
                         col = Sample(src, sw, sh, su * scale.x + offset.x, sv * scale.y + offset.y, point);
+                    }
+                    if (TestPattern)
+                    {
+                        // engrave_testpattern: red = across (u), green = up (v), a 10x10 checker, a white dot at the bottom left
+                        bool check = (((int)(u * 10) + (int)(v * 10)) & 1) == 0;
+                        bool dot = (u - 0.05f) * (u - 0.05f) * aw * aw / (float)(ah * ah) + (v - 0.1f) * (v - 0.1f) < 0.004f;
+                        px[i] = dot ? new Color32(255, 255, 255, 255) : new Color32((byte)(u * 255), (byte)(v * 255), (byte)(check ? 40 : 160), 255);
+                        continue;
                     }
                     // deeper cuts catch less light: 1 at the surface, about 0.65 at the bottom of a groove
                     float shade = 0.55f + 0.45f * HeightAt(m, u, v);

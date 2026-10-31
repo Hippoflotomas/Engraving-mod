@@ -151,7 +151,7 @@ namespace Engraving.Carving
             var pictures = EngravingCharges.Prepare(text, out int waiting);
             string icons = ItemIconCharges.Prepare(text, out int iconsWaiting);
             string key = CarvingJobs.KeyFor(text, model.Width, model.Height, ppm) + "|" + side + "|" +
-                         EngravingPlugin.CarveDepth.Value + "|" + EngravingPlugin.AlbedoMaxSize.Value + "|" + EngravingPlugin.KeepWallBumps.Value + "|" +
+                         EngravingPlugin.CarveDepth.Value + "|" + EngravingPlugin.AlbedoMaxSize.Value + "|" + EngravingPlugin.KeepWallBumps.Value + "|" + CarvingTextures.TestPattern + "|" +
                          EngravingCharges.KeyOf(pictures) + "|" + icons;
             if (key == layer.Key) return;
 
@@ -265,6 +265,24 @@ namespace Engraving.Carving
             filter.sharedMesh = variant.Mesh;
             r.sharedMaterials = mats;
             _shown[r] = variant.Mesh;
+            foreach (var (face, _) in ready) NoTextureOffset(r, variant.SlotOf[face.Side]);
+        }
+
+        static readonly int UVOffsetId = Shader.PropertyToID("_UVOffset");
+
+        /// <summary>
+        /// The game gives some pieces (Grausten, black marble) a random texture offset in the renderer's property
+        /// block, so neighbouring walls don't look alike. The wall's texture repeats, so any offset looks fine; a
+        /// carving's doesn't, and was shifted off the face, smearing its edge over the wall (2026-10-31: offset
+        /// (-1.94, -0.93) turned a whole Grausten carving into one colour). The carving's material slot gets its own
+        /// copy of the renderer's block with the offset taken out.
+        /// </summary>
+        static void NoTextureOffset(MeshRenderer r, int slot)
+        {
+            var block = new MaterialPropertyBlock();
+            r.GetPropertyBlock(block);   // the renderer's own block: keep whatever else the game set
+            block.SetVector(UVOffsetId, Vector4.zero);
+            r.SetPropertyBlock(block, slot);
         }
 
         /// <summary>
@@ -283,7 +301,13 @@ namespace Engraving.Carving
                 if (filter == null) continue;
                 var now = filter.sharedMesh;
                 var want = _shown[r];
-                if (now == want) continue;
+                if (now == want)
+                {
+                    // the game may set or change the renderer's block after us: keep our copy in step
+                    foreach (var layer in new[] { _front, _back })
+                        if (layer.Ready.ContainsKey(r) && CarvedMeshes.SlotFor(want, layer.Side, out int slot)) NoTextureOffset(r, slot);
+                    continue;
+                }
                 if (SwapReported.Add(_prefab + "/" + r.name))
                     Jotunn.Logger.LogWarning($"[Engraving] '{_prefab}': renderer '{PathTo(r.transform)}' was switched from our '{want?.name}' to " +
                                              $"'{now?.name}' (readable {now?.isReadable}, {now?.subMeshCount} submeshes) by something else; " +
@@ -321,6 +345,12 @@ namespace Engraving.Carving
                 m.EnableKeyword("_NORMALMAP");
             }
             if (m.HasProperty("_BumpScale")) m.SetFloat("_BumpScale", 1f);
+            // a triplanar wall (black marble) would look the carving up by world position: lay it on the face instead
+            if (CarvingTextures.TriplanarScale(m) > 0f)
+            {
+                m.SetFloat("_TriplanarMap", 0f);
+                m.DisableKeyword("_TRIPLANARMAP_ON");
+            }
             return m;
         }
 
@@ -392,6 +422,17 @@ namespace Engraving.Carving
                         report.AppendLine($"   material '{src.name}' shader '{src.shader?.name}' keywords [{string.Join(" ", src.shaderKeywords)}]");
                         if (mt != null) report.AppendLine($"   _MainTex '{mt.name}' {mt.width}x{mt.height} filter {mt.filterMode} wrap {mt.wrapMode} scale {src.mainTextureScale} offset {src.mainTextureOffset}");
                     }
+                    report.AppendLine("   source " + ShaderValues(src));
+                    if (layer.Ready.TryGetValue(r, out var shownMat) && shownMat.mat != null)
+                        report.AppendLine("   carved " + ShaderValues(shownMat.mat) + $" instancing {shownMat.mat.enableInstancing}");
+                    report.AppendLine($"   renderer: property block {r.HasPropertyBlock()}, world position {r.transform.position}, rotation {r.transform.rotation.eulerAngles}");
+                    if (r.HasPropertyBlock())
+                    {
+                        var block = new MaterialPropertyBlock();
+                        r.GetPropertyBlock(block);
+                        report.AppendLine($"   block: _MainTex_ST {block.GetVector("_MainTex_ST")} _UVOffset {block.GetVector("_UVOffset")} _TriplanarMap {block.GetFloat("_TriplanarMap")} " +
+                                          $"_MainTex {(block.GetTexture("_MainTex") != null ? block.GetTexture("_MainTex").name : "-")}");
+                    }
                     for (int t = 0; t < face.Triangles; t++)
                     {
                         int b = t * 6;
@@ -426,6 +467,15 @@ namespace Engraving.Carving
             }
             System.IO.File.WriteAllText(System.IO.Path.Combine(dir, $"{_prefab}_report.txt"), report.ToString());
             return files + 1;
+        }
+
+        static string ShaderValues(Material m)
+        {
+            string F(string n) => m.HasProperty(n) ? m.GetFloat(n).ToString("0.###") : "-";
+            string V(string n) => m.HasProperty(n) ? m.GetVector(n).ToString() : "-";
+            return $"'{m.name}': _TriplanarMap {F("_TriplanarMap")} _TriplanarLocalPos {F("_TriplanarLocalPos")} _TriplanarScale {F("_TriplanarScale")} " +
+                   $"_MainTex_ST {V("_MainTex_ST")} _UVOffset {V("_UVOffset")} _AddRain {F("_AddRain")} _MoveableObject {F("_MoveableObject")} " +
+                   $"_ValueNoise {F("_ValueNoise")} keywords [{string.Join(" ", m.shaderKeywords)}] queue {m.renderQueue}";
         }
 
         string PathTo(Transform t)

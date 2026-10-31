@@ -74,8 +74,21 @@ namespace Engraving.Core.Language
         public float Rotation;
         public bool Flipped;
         public int SourceLine;
+        /// <summary>Figures only: the pose ("striking"), or null for the default.</summary>
+        public string Pose;
+        /// <summary>Figures only: what it holds ("axe", "shield").</summary>
+        public System.Collections.Generic.List<string> Held = new System.Collections.Generic.List<string>();
+        /// <summary>Scenes only: the part this charge plays (the scene lays these out itself, not the 3x3 grid).</summary>
+        public SceneSlot Slot;
+        /// <summary>Scenes only: the space before this charge, and how high it floats (in the hero's heights).</summary>
+        public float SceneGap, SceneLift;
 
-        public ChargeSpec Clone() => (ChargeSpec)MemberwiseClone();
+        public ChargeSpec Clone()
+        {
+            var c = (ChargeSpec)MemberwiseClone();
+            c.Held = new System.Collections.Generic.List<string>(Held);
+            return c;
+        }
     }
 
     /// <summary>The parsed description of one engraved panel.</summary>
@@ -85,10 +98,14 @@ namespace Engraving.Core.Language
         public float Width = 2f;
         public float Height = 2f;
         public bool SizeGiven;
+        /// <summary>Poses recorded in the carving's hidden "#pose:" lines (players' own poses travel with the carving).</summary>
+        public System.Collections.Generic.Dictionary<string, Figures.Pose> Poses = new System.Collections.Generic.Dictionary<string, Figures.Pose>();
         public BackgroundKind Background = BackgroundKind.Plain;
         /// <summary>Indexed by (int)Side. Null or Style == None means no border on that side.</summary>
         public BorderSpec[] Borders = new BorderSpec[4];
         public List<ChargeSpec> Charges = new List<ChargeSpec>();
+        /// <summary>The scene, if the carving has one ("a scene of war against a troll").</summary>
+        public SceneSpec Scene;
 
         public BorderSpec Border(Side s)
         {

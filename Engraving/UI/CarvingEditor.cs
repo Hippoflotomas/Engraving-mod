@@ -197,10 +197,15 @@ namespace Engraving.UI
             if (changed)
             {
                 if (player == null || !Chisel.IsEquipped(player)) { _status.text = "Equip your chisel to carve."; return; }
+                // a scene's open choices are made now, from what the carver has done, and written into the carving
+                var sceneProblems = new List<string>();
+                text = SceneProgressReader.Fill(text, sceneProblems);
+                if (sceneProblems.Count > 0) { _status.text = $"<color=#ff8060>{sceneProblems[0]}</color>"; return; }
                 var parsed = Parser.Parse(text);
                 if (parsed.HasErrors) { _status.text = "<color=#ff8060>Fix the problems first.</color>"; return; }
                 if (text.Length > 0 && !Chisel.Wear(player)) { _status.text = "Your chisel is too blunt."; return; }
-                _target.SetCarving(EngravingCharges.WithFingerprints(text), _side);
+                // pictures by fingerprint, and any pose that isn't built in, travel with the carving
+                _target.SetCarving(Core.Figures.PoseLibrary.Record(EngravingCharges.WithFingerprints(text)), _side);
             }
             Hide();
         }
@@ -460,7 +465,9 @@ namespace Engraving.UI
             if (_renderAt >= 0 && Time.unscaledTime >= _renderAt)
             {
                 _renderAt = -1;
-                string text = _input.text ?? "";
+                // drawn as it will be stored: with the player's own poses recorded
+                var sceneProblems = new List<string>();
+                string text = Core.Figures.PoseLibrary.Record(SceneProgressReader.Fill(_input.text ?? "", sceneProblems));
                 _previewWanted = text;
                 var pictures = EngravingCharges.Prepare(text, out int waiting);
                 ItemIconCharges.Prepare(text, out int iconsWaiting);
@@ -473,6 +480,7 @@ namespace Engraving.UI
                     _preview.texture = _previewTex;
                     var parsed = Parser.Parse(text);
                     var render = c.Diagnostics.Where(d => !parsed.Diagnostics.Any(p => p.Message == d.Message)).ToList();
+                    foreach (var sp in sceneProblems) render.Insert(0, new Diagnostic(Severity.Error, 0, sp));
                     if (waiting > 0)
                         render.Insert(0, new Diagnostic(Severity.Warning, 0, $"{waiting} picture(s) not on this computer yet (see engrave_pending)"));
                     ShowProblems(parsed.Diagnostics, render);

@@ -44,6 +44,7 @@ namespace Engraving.Core.Language
             _r = new ParseResult();
             _s = new EngravingSpec();
             _r.Spec = _s;
+            _s.Poses = Figures.PoseLibrary.ReadTail(source);
             _t = Lexer.Tokenize(source, _r.Diagnostics);
             _p = 0;
 
@@ -79,6 +80,8 @@ namespace Engraving.Core.Language
         void ParseStatement(List<Token> st, List<(BorderSpec[] sides, string text)> runeGroups)
         {
             var head = st[0];
+            var words = st.Where(t => t.Kind == TokenKind.Word).Select(t => t.Text).ToList();
+            if (Scene.IsScene(words)) { ParseScene(words, head.Line); return; }
             if (head.Kind == TokenKind.Word)
             {
                 switch (head.Text)
@@ -101,6 +104,19 @@ namespace Engraving.Core.Language
                 }
             }
             ParseCharges(st);
+        }
+
+        // ---------------------------------------------------------------- scenes
+
+        void ParseScene(List<string> words, int line)
+        {
+            if (_s.Scene != null) throw new StatementError("a carving holds one scene; carve the next one on the next panel");
+            var problems = new List<string>();
+            var sc = Scene.Read(words, line, problems);
+            foreach (var p in problems) Error(line, p);
+            if (problems.Count > 0) return;
+            _s.Scene = sc;
+            _s.Charges.AddRange(Scene.Expand(sc));
         }
 
         // ---------------------------------------------------------------- size
@@ -347,6 +363,7 @@ namespace Engraving.Core.Language
             var nameWords = new List<string>();
             int curRow = 1, curCol = 1;
             bool inPosition = false;
+            bool holding = false;   // after "holding": the items a figure holds
 
             void FlushPosition()
             {
@@ -378,6 +395,7 @@ namespace Engraving.Core.Language
 
                 if (t.Kind == TokenKind.Colon || t.Kind == TokenKind.Comma)
                 {
+                    holding = false;
                     FlushPosition();
                     if (t.Kind == TokenKind.Comma) FlushName();
                     continue;
@@ -429,6 +447,27 @@ namespace Engraving.Core.Language
                         continue;
                     }
                     if (IsPositionWord(next) || ((next == "the" || next == "a") && IsPositionWord(next2))) continue;
+                }
+
+                // figures: a pose and what they hold ("a viking striking, holding an axe and a shield")
+                if (holding && cur != null)
+                {
+                    if (w == "a" || w == "an" || w == "and" || w == "one" || w == "the" || w == "his" || w == "her" || w == "their") continue;
+                    var item = Figures.Props.ItemFor(w);
+                    if (item != null) { if (!cur.Held.Contains(item)) cur.Held.Add(item); continue; }
+                    holding = false;
+                }
+                var figure = cur != null ? Figures.Catalog.Find(nameWords.Count > 0 ? string.Join(" ", nameWords) : cur.Name) : null;
+                if (figure != null)
+                {
+                    var pose = Figures.PoseLibrary.NameFor(w, figure.Rig, _s.Poses);
+                    if (pose != null) { FlushName(); cur.Pose = pose; continue; }
+                    if (figure.Rig == "humanoid" && (w == "holding" || w == "wielding" || w == "carrying" || w == "bearing" || w == "with" || w == "brandishing"))
+                    {
+                        FlushName();
+                        holding = true;
+                        continue;
+                    }
                 }
 
                 // a count starts a new charge: "a wolf and two ravens"

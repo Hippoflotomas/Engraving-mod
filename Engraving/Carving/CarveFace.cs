@@ -73,6 +73,15 @@ namespace Engraving.Carving
         /// </summary>
         public static Mesh OriginalOf(Mesh m) => m != null && Originals.TryGetValue(m, out var o) ? o : m;
 
+        static readonly Dictionary<Mesh, Variant> ByMesh = new Dictionary<Mesh, Variant>();
+
+        /// <summary>The submesh a carved mesh shows a side's carving in.</summary>
+        public static bool SlotFor(Mesh carved, int side, out int slot)
+        {
+            slot = -1;
+            return carved != null && ByMesh.TryGetValue(carved, out var v) && v.SlotOf.TryGetValue(side, out slot);
+        }
+
         public static Variant For(IList<CarveFace> faces)
         {
             var ordered = faces.OrderByDescending(f => f.Side).ToList();
@@ -130,6 +139,7 @@ namespace Engraving.Carving
             m.UploadMeshData(true);
             v.Mesh = m;
             Originals[m] = first.Original;
+            ByMesh[m] = v;
             Cache[key] = v;
             return v;
         }

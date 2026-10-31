@@ -106,6 +106,7 @@ namespace Engraving
 
             BuildChargeLibrary();
             EngravingCharges.LoadLocal();
+            LoadPoses();
             EngravingSync.Init();
             Chisel.Register();
             _harmony = new Harmony(PluginGUID);
@@ -114,11 +115,39 @@ namespace Engraving
             CommandManager.Instance.AddConsoleCommand(new EngraveFileCommand());
             CommandManager.Instance.AddConsoleCommand(new EngraveInspectCommand());
             CommandManager.Instance.AddConsoleCommand(new EngraveDumpCommand());
+            CommandManager.Instance.AddConsoleCommand(new EngraveTestPatternCommand());
             CommandManager.Instance.AddConsoleCommand(new EngraveReloadCommand());
             CommandManager.Instance.AddConsoleCommand(new EngravePendingCommand());
             CommandManager.Instance.AddConsoleCommand(new EngraveGetCommand());
             Jotunn.Logger.LogInfo($"{PluginName} {PluginVersion} loaded; pictures in {EngravingCharges.OwnFolder}" +
                                   (UseHeraldryCharges.Value ? $" and {EngravingCharges.HeraldryChargesFolder}" : ""));
+        }
+
+        public static string PoseFolder => System.IO.Path.Combine(EngravingCharges.Root, "EngravingPoses");
+
+        /// <summary>
+        /// Figure poses: the built-in ones, then every *.json in the EngravingPoses folder (Hippo, 2026-10-31: players
+        /// can edit and add poses). The built-in poses are written beside them as an example to copy from.
+        /// Returns a one-line summary.
+        /// </summary>
+        internal static string LoadPoses()
+        {
+            string dir = PoseFolder;
+            var files = new System.Collections.Generic.List<(string, string)>();
+            try
+            {
+                System.IO.Directory.CreateDirectory(dir);
+                System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "builtin-poses.json.example"), Core.Figures.PoseLibrary.BuiltinJson);
+                foreach (var f in System.IO.Directory.GetFiles(dir, "*.json").OrderBy(f => f, System.StringComparer.OrdinalIgnoreCase))
+                    files.Add((System.IO.Path.GetFileName(f), System.IO.File.ReadAllText(f)));
+            }
+            catch (System.Exception e) { Jotunn.Logger.LogWarning($"[Engraving] Couldn't read poses from {dir}: {e.Message}"); }
+            foreach (var problem in Core.Figures.PoseLibrary.Load(files))
+                Jotunn.Logger.LogWarning($"[Engraving] Pose file {problem}");
+            CarvedPiece.Generation++;
+            string summary = $"{Core.Figures.PoseLibrary.All.Count()} poses ({files.Count} file(s) in {dir})";
+            Jotunn.Logger.LogInfo("[Engraving] " + summary);
+            return summary;
         }
 
         private void Update()
@@ -258,6 +287,20 @@ namespace Engraving
         }
     }
 
+    /// <summary>engrave_testpattern: carvings show a UV test pattern instead of the wall's texture (run again to stop).</summary>
+    internal class EngraveTestPatternCommand : ConsoleCommand
+    {
+        public override string Name => "engrave_testpattern";
+        public override string Help => "Toggle a test pattern on carvings (red = across, green = up, white dot bottom left)";
+
+        public override void Run(string[] args)
+        {
+            CarvingTextures.TestPattern = !CarvingTextures.TestPattern;
+            CarvedPiece.Generation++;
+            global::Console.instance.Print("Test pattern " + (CarvingTextures.TestPattern ? "on" : "off") + "; carvings will redraw.");
+        }
+    }
+
     /// <summary>engrave_reload: re-reads charge images and redraws every carving.</summary>
     internal class EngraveReloadCommand : ConsoleCommand
     {
@@ -269,7 +312,8 @@ namespace Engraving
             EngravingCharges.LoadLocal();
             if (ZNet.instance != null && ZNet.instance.IsServer()) EngravingCharges.LoadServerFolder();
             EngravingPlugin.Instance.BuildChargeLibrary();
-            global::Console.instance.Print("Pictures reloaded; carvings will redraw.");
+            string poses = EngravingPlugin.LoadPoses();
+            global::Console.instance.Print("Pictures reloaded; " + poses + "; carvings will redraw.");
         }
     }
 

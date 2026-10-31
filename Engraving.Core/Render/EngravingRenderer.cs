@@ -107,7 +107,12 @@ namespace Engraving.Core.Render
             var resolved = new List<(ChargeSpec, IShape)>();
             foreach (var c in spec.Charges)
             {
-                var shape = library?.Resolve(c.Name);
+                // a figure ("a viking striking, holding an axe") is posed and built here; anything else is looked up
+                // a scene's ground line: the layout sizes it to the field
+                if (c.Slot == SceneSlot.Ground) { resolved.Add((c, new FuncShape((x, y) => Sdf.Box(x, y, 1, 0.01f), 1, 0.01f))); continue; }
+                var figure = Figures.Catalog.Find(c.Name);
+                IShape shape = figure != null ? Figures.FigureShape.Get(figure, Figures.PoseLibrary.Resolve(figure.Rig, c.Pose, spec.Poses), c.Held)
+                                              : library?.Resolve(c.Name);
                 if (shape == null)
                 {
                     res.Diagnostics.Add(new Diagnostic(Severity.Warning, c.SourceLine, $"no charge called '{c.Name}' (not a built-in shape, and no matching image found)"));
@@ -225,12 +230,14 @@ namespace Engraving.Core.Render
                         }
                         else if (d < 0)
                             h = M.Lerp(baseGround, lv.Surface, M.Smooth(0, lv.Bevel, -d));
+                        if (d < 0) h = CutLines(h, p, x, y, baseGround, lv);
                         break;
                     case CarveMode.Incised:
                     {
                         float hw = M.Min(lv.GrooveHalfWidth, p.Scale * 0.05f);
                         float ad = M.Abs(d);
                         if (ad < hw) h = M.Min(h, M.Lerp(lv.Groove, h, M.Smooth(0, hw, ad)));
+                        if (d < 0) h = CutLines(h, p, x, y, lv.Groove, lv);
                         break;
                     }
                     case CarveMode.Sunken:
@@ -251,6 +258,18 @@ namespace Engraving.Core.Render
                 h = EdgeRise(h, dEdge, lv);
             }
             return h;
+        }
+
+        /// <summary>
+        /// A figure's inner cut lines (where its parts overlap, its belt and shield rim): thin V grooves, a little
+        /// narrower than incised lines, cut down towards <paramref name="floor"/>.
+        /// </summary>
+        static float CutLines(float h, Placement p, float x, float y, float floor, Levels lv)
+        {
+            float hw = M.Min(lv.GrooveHalfWidth * 0.8f, p.Scale * 0.012f);
+            float cd = p.CutDistance(x, y);
+            if (cd >= hw) return h;
+            return M.Min(h, M.Lerp(M.Min(floor, lv.Ground), h, M.Smooth(0, hw, cd)));
         }
 
         static float Background(float x, float y, BackgroundKind bg, Levels lv)
