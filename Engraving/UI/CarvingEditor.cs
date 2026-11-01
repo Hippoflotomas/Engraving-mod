@@ -173,6 +173,8 @@ namespace Engraving.UI
 
             // basic mode starts from its defaults each time (as Heraldry Mod's does); a carving already here dims it
             _basic = new BasicCarving();
+            // a door has its own frame: start without a border (Hippo, 2026-11-01); one can still be ticked
+            if (piece.GetComponent<Door>() != null) _basic.Top = _basic.Bottom = _basic.Left = _basic.Right = false;
             FillChargeList();
             _subjectsFor = null;   // the player may have earned more since last time
             SyncBasic();
@@ -634,7 +636,7 @@ namespace Engraving.UI
                     if (waiting > 0)
                         render.Insert(0, new Diagnostic(Severity.Warning, 0, $"{waiting} picture(s) not on this computer yet (see engrave_pending)"));
                     ShowProblems(parsed.Diagnostics, render);
-                });
+                }, _model.Area);
             }
         }
 

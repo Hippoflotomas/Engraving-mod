@@ -76,14 +76,26 @@ namespace Engraving.Pictures
             {
                 string custom = EngravingPlugin.HeraldryFolder.Value;
                 if (!string.IsNullOrWhiteSpace(custom)) return custom.Trim();
+                // early versions kept everything beside Heraldry Mod's folders: keep using that if it's where the pictures are
+                string legacy = System.IO.Path.Combine(Documents, "ValheimHeraldryMod");
+                string own = System.IO.Path.Combine(Documents, "ValheimEngraving");
+                if (!Directory.Exists(own) && Directory.Exists(System.IO.Path.Combine(legacy, "Engravings"))) return legacy;
+                return own;
+            }
+        }
+
+        static string Documents
+        {
+            get
+            {
                 string docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-                if (string.IsNullOrEmpty(docs)) docs = BepInEx.Paths.ConfigPath; // a server account without Documents
-                return System.IO.Path.Combine(docs, "ValheimHeraldryMod");
+                return string.IsNullOrEmpty(docs) ? BepInEx.Paths.ConfigPath : docs; // a server account without Documents
             }
         }
 
         public static string OwnFolder => System.IO.Path.Combine(Root, "Engravings");
-        public static string HeraldryChargesFolder => System.IO.Path.Combine(Root, "Charges");
+        /// <summary>Heraldry Mod's own pictures, wherever Engraving's folder is (optional: UseHeraldryCharges).</summary>
+        public static string HeraldryChargesFolder => System.IO.Path.Combine(Documents, "ValheimHeraldryMod", "Charges");
         public static string DownloadFolder => System.IO.Path.Combine(Root, "EngravingsDownloaded");
         public static string ServerFolder
         {

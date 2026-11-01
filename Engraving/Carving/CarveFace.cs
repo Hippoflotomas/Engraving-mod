@@ -160,6 +160,8 @@ namespace Engraving.Carving
         public Rect Bounds;
         public readonly List<CarveFace> Faces = new List<CarveFace>();
         public string Note;
+        /// <summary>Where the carving goes on a decorated door (its flat panel), or null for the whole face.</summary>
+        public Engraving.Core.Render.CarveArea Area;
 
         public float Width => Bounds.width;
         public float Height => Bounds.height;
@@ -198,7 +200,7 @@ namespace Engraving.Carving
             if (Cache.TryGetValue(key, out var cached)) return cached?.Bind(root);
 
             CarveModel model = null;
-            try { model = Build(root, side); }
+            try { model = Build(ShapeSource(root, prefabName), side); }
             catch (Exception e) { Jotunn.Logger.LogWarning($"[Engraving] Can't find a carvable face on '{prefabName}': {e.Message}"); }
             if (model != null)
                 Jotunn.Logger.LogInfo($"[Engraving] '{prefabName}' side {(side > 0 ? "+Z" : "-Z")}: {model.Note}");
@@ -222,17 +224,42 @@ namespace Engraving.Carving
         /// <summary>The cached model with its renderers pointed at this instance's.</summary>
         CarveModel Bind(GameObject root)
         {
-            var bound = new CarveModel { Side = Side, Bounds = Bounds, Note = Note };
+            var bound = new CarveModel { Side = Side, Bounds = Bounds, Note = Note, Area = Area };
             var byPath = root.GetComponentsInChildren<MeshRenderer>(true).ToDictionary(r => PathOf(r.transform, root.transform), r => r);
             for (int i = 0; i < Faces.Count; i++)
                 if (byPath.TryGetValue(_paths[i], out var r)) bound.Faces.Add(Faces[i].BoundTo(r));
             return bound.Faces.Count > 0 ? bound : null;
         }
 
+        /// <summary>
+        /// Where to measure the face. A door is measured on its prefab, so it's always measured shut (Hippo, 2026-11-01:
+        /// a door measured while open carved its frame and leaf as one, split apart when it swung).
+        /// </summary>
+        static GameObject ShapeSource(GameObject root, string prefabName)
+        {
+            if (root.GetComponent<Door>() == null) return root;
+            var prefab = ZNetScene.instance != null ? ZNetScene.instance.GetPrefab(prefabName) : null;
+            return prefab != null ? prefab : root;
+        }
+
+        /// <summary>A door's leaf: the renderers under its swinging "door" child (the frame stays put and isn't carved).</summary>
+        static List<MeshRenderer> DoorLeaf(GameObject root, List<MeshRenderer> renderers)
+        {
+            if (root.GetComponent<Door>() == null) return renderers;
+            var leaf = renderers.Where(r =>
+            {
+                for (var t = r.transform; t != null && t != root.transform; t = t.parent)
+                    if (t.name.Equals("door", StringComparison.OrdinalIgnoreCase)) return true;
+                return false;
+            }).ToList();
+            return leaf.Count > 0 ? leaf : renderers;
+        }
+
         static CarveModel Build(GameObject root, int side)
         {
             var rootInv = root.transform.worldToLocalMatrix;
-            var renderers = CloseRenderers(root);
+            bool door = root.GetComponent<Door>() != null;
+            var renderers = DoorLeaf(root, CloseRenderers(root));
             var snaps = new List<(MeshRenderer r, MeshSnapshot s, Matrix4x4 toRoot)>();
             float outer = float.NegativeInfinity, inner = float.PositiveInfinity;
             foreach (var r in renderers)
@@ -254,6 +281,11 @@ namespace Engraving.Carving
             // Everything facing this way in the front half of the piece is carved: planks and stones sit at
             // different depths (2026-10-29: a 6 cm band caught only half of woodwall's planks)
             float middle = (outer + inner) * 0.5f;
+
+            // a door leaf is carved on its main panel only: the depth with the most area, so a rim, straps or a
+            // handle standing proud of it keep their own look and the carving is centred on the panel
+            float? panel = door ? MainPanelDepth(snaps, side, middle) : (float?)null;
+            const float PanelBand = 0.035f;
 
             // pick the face triangles on each renderer
             var picked = new List<(MeshRenderer r, MeshSnapshot s, Matrix4x4 toRoot, List<int> tris, int slot)>();
@@ -277,6 +309,7 @@ namespace Engraving.Carving
                         if (n.z * side < MinFacing) continue;
                         float z = (a.z + b.z + c.z) / 3f * side;
                         if (z < middle) continue;
+                        if (panel.HasValue && Mathf.Abs(z - panel.Value) > PanelBand) continue;
                         tris.Add(t[i]); tris.Add(t[i + 1]); tris.Add(t[i + 2]);
                         slotCount[sm]++;
                         foreach (var p in new[] { a, b, c })
@@ -301,9 +334,139 @@ namespace Engraving.Carving
                 model._paths.Add(PathOf(r.transform, root.transform));
                 totalTris += face.Triangles;
             }
+            if (door) model.Area = model.PanelArea(picked.Select(p => (p.s, p.toRoot, p.tris)).ToList());
             model.Note = $"{model.Faces.Count} renderer(s), {totalTris} face triangles, face {model.Width:0.00} x {model.Height:0.00} m" +
+                         (model.Area != null ? $", carved within {model.Area.Box} (no borders)" : "") +
+                         (panel.HasValue ? $", door leaf panel at {panel.Value:0.00} m" : "") +
                          (picked.Any(p => p.s.FromGpu) ? ", mesh read from the GPU" : "");
             return model;
+        }
+
+        /// <summary>
+        /// A decorated door's carving area: the largest upright rectangle on its flat panel. Straps and bars across the
+        /// panel are bridged (closing the panel's outline by ~12 cm), a rim round it isn't. Null when the panel is
+        /// nearly the whole face (a plain plank door), which then carves like a wall, borders and all.
+        /// </summary>
+        Engraving.Core.Render.CarveArea PanelArea(List<(MeshSnapshot s, Matrix4x4 toRoot, List<int> tris)> picked)
+        {
+            const float Cell = 0.025f;
+            int gw = Mathf.Clamp(Mathf.CeilToInt(Width / Cell), 4, 400), gh = Mathf.Clamp(Mathf.CeilToInt(Height / Cell), 4, 400);
+            float cw = Width / gw, ch = Height / gh;
+            var on = new bool[gw * gh];
+            foreach (var (s, toRoot, tris) in picked)
+                for (int i = 0; i + 2 < tris.Count; i += 3)
+                {
+                    var a = Project(toRoot.MultiplyPoint3x4(s.Vertices[tris[i]]));
+                    var b = Project(toRoot.MultiplyPoint3x4(s.Vertices[tris[i + 1]]));
+                    var c = Project(toRoot.MultiplyPoint3x4(s.Vertices[tris[i + 2]]));
+                    a = new Vector2(a.x * Width, a.y * Height); b = new Vector2(b.x * Width, b.y * Height); c = new Vector2(c.x * Width, c.y * Height);
+                    int ix0 = Mathf.Max(0, Mathf.FloorToInt(Mathf.Min(a.x, Mathf.Min(b.x, c.x)) / cw)), ix1 = Mathf.Min(gw - 1, Mathf.FloorToInt(Mathf.Max(a.x, Mathf.Max(b.x, c.x)) / cw));
+                    int iy0 = Mathf.Max(0, Mathf.FloorToInt(Mathf.Min(a.y, Mathf.Min(b.y, c.y)) / ch)), iy1 = Mathf.Min(gh - 1, Mathf.FloorToInt(Mathf.Max(a.y, Mathf.Max(b.y, c.y)) / ch));
+                    float area = (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
+                    if (Mathf.Abs(area) < 1e-8f) continue;
+                    for (int y = iy0; y <= iy1; y++)
+                        for (int x = ix0; x <= ix1; x++)
+                        {
+                            var p = new Vector2((x + 0.5f) * cw, (y + 0.5f) * ch);
+                            float w0 = ((b.x - p.x) * (c.y - p.y) - (c.x - p.x) * (b.y - p.y)) / area;
+                            float w1 = ((c.x - p.x) * (a.y - p.y) - (a.x - p.x) * (c.y - p.y)) / area;
+                            if (w0 >= -0.01f && w1 >= -0.01f && w0 + w1 <= 1.01f) on[y * gw + x] = true;
+                        }
+                }
+            // bridge straps and bars: dilate then erode
+            int r = Mathf.Max(1, Mathf.RoundToInt(0.12f / Cell));
+            on = Erode(Dilate(on, gw, gh, r), gw, gh, r);
+
+            // the largest rectangle of panel (row by row, the largest rectangle under a histogram)
+            var hist = new int[gw];
+            int bestArea = 0, bx0 = 0, by0 = 0, bx1 = 0, by1 = 0;
+            for (int y = 0; y < gh; y++)
+            {
+                for (int x = 0; x < gw; x++) hist[x] = on[y * gw + x] ? hist[x] + 1 : 0;
+                var stack = new Stack<int>();
+                for (int x = 0; x <= gw; x++)
+                {
+                    int hgt = x < gw ? hist[x] : 0;
+                    while (stack.Count > 0 && hist[stack.Peek()] >= hgt)
+                    {
+                        int top = stack.Pop();
+                        int left = stack.Count > 0 ? stack.Peek() + 1 : 0;
+                        int a = hist[top] * (x - left);
+                        if (a > bestArea) { bestArea = a; bx0 = left; bx1 = x; by1 = y + 1; by0 = y + 1 - hist[top]; }
+                    }
+                    stack.Push(x);
+                }
+            }
+            if (bestArea == 0 || bestArea > 0.92f * gw * gh) return null;
+            // a little clear of the panel's edges
+            float m = 0.04f * Mathf.Min((bx1 - bx0) * cw, (by1 - by0) * ch);
+            return new Engraving.Core.Render.CarveArea
+            {
+                Box = new Engraving.Core.Render.Box(bx0 * cw + m, by0 * ch + m, bx1 * cw - m, by1 * ch - m),
+                NoBorders = true,
+            };
+        }
+
+        static bool[] Dilate(bool[] g, int w, int h, int r) => Morph(g, w, h, r, true);
+        static bool[] Erode(bool[] g, int w, int h, int r) => Morph(g, w, h, r, false);
+
+        /// <summary>Square-window dilation or erosion (separable: rows, then columns). Off the grid never adds or removes.</summary>
+        static bool[] Morph(bool[] g, int w, int h, int r, bool dilate)
+        {
+            var rows = new bool[w * h];
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                {
+                    bool v = !dilate;
+                    for (int k = -r; k <= r && v == !dilate; k++)
+                    {
+                        int xx = x + k;
+                        bool c = xx >= 0 && xx < w ? g[y * w + xx] : !dilate;
+                        if (dilate ? c : !c) v = dilate;
+                    }
+                    rows[y * w + x] = v;
+                }
+            var outp = new bool[w * h];
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                {
+                    bool v = !dilate;
+                    for (int k = -r; k <= r && v == !dilate; k++)
+                    {
+                        int yy = y + k;
+                        bool c = yy >= 0 && yy < h ? rows[yy * w + x] : !dilate;
+                        if (dilate ? c : !c) v = dilate;
+                    }
+                    outp[y * w + x] = v;
+                }
+            return outp;
+        }
+
+        /// <summary>The depth (2 cm steps) holding the most face area among front-facing triangles in the front half.</summary>
+        static float? MainPanelDepth(List<(MeshRenderer r, MeshSnapshot s, Matrix4x4 toRoot)> snaps, int side, float middle)
+        {
+            var area = new Dictionary<int, float>();
+            foreach (var (r, s, toRoot) in snaps)
+                foreach (var t in s.SubMeshTriangles)
+                    for (int i = 0; i + 2 < t.Length; i += 3)
+                    {
+                        Vector3 a = toRoot.MultiplyPoint3x4(s.Vertices[t[i]]);
+                        Vector3 b = toRoot.MultiplyPoint3x4(s.Vertices[t[i + 1]]);
+                        Vector3 c = toRoot.MultiplyPoint3x4(s.Vertices[t[i + 2]]);
+                        var n = Vector3.Cross(b - a, c - a);
+                        float twice = n.magnitude;
+                        if (twice < 1e-9f || n.z / twice * side < MinFacing) continue;
+                        float z = (a.z + b.z + c.z) / 3f * side;
+                        if (z < middle) continue;
+                        int bin = Mathf.RoundToInt(z / 0.02f);
+                        // the face-on area: what the eye sees of it
+                        area[bin] = (area.TryGetValue(bin, out var v) ? v : 0) + Mathf.Abs(n.z) * 0.5f;
+                    }
+            if (area.Count == 0) return null;
+            int best = area.OrderByDescending(k => k.Value).First().Key;
+            // a panel split across two neighbouring bins sits between them
+            float w0 = area[best], wm = area.TryGetValue(best - 1, out var m) ? m : 0, wp = area.TryGetValue(best + 1, out var q) ? q : 0;
+            return (best + (wp - wm) / (w0 + wm + wp)) * 0.02f;
         }
 
         Vector2 Project(Vector3 p)

@@ -24,6 +24,20 @@ namespace Engraving.Core.Render
         public Levels Levels = new Levels();
         /// <summary>Hard cap on texture size along either axis.</summary>
         public int MaxPixels = 2048;
+        /// <summary>Where on the face the carving goes, if not the whole of it (a door's flat panel); outside it stays uncut.</summary>
+        public CarveArea Area;
+    }
+
+    /// <summary>
+    /// The part of a face a carving may use (Hippo, 2026-11-01: on decorated doors the carving belongs on the flat panel,
+    /// centred there, with no border of its own: the door's frame is the border).
+    /// </summary>
+    public sealed class CarveArea
+    {
+        /// <summary>The carving's rectangle on the face, metres from the face's bottom left (as seen).</summary>
+        public Box Box;
+        public bool NoBorders;
+        public string Key => $"{Box.X0:0.###},{Box.Y0:0.###},{Box.X1:0.###},{Box.Y1:0.###}{(NoBorders ? "nb" : "")}";
     }
 
     public class RenderResult
@@ -53,13 +67,23 @@ namespace Engraving.Core.Render
             opt = opt ?? new RenderOptions();
             var lv = opt.Levels;
             var res = new RenderResult();
-            float W = opt.Width ?? spec.Width, H = opt.Height ?? spec.Height;
+            float FW = opt.Width ?? spec.Width, FH = opt.Height ?? spec.Height;
             float ppm = opt.PixelsPerMetre;
-            if (W * ppm > opt.MaxPixels) ppm = opt.MaxPixels / W;
-            if (H * ppm > opt.MaxPixels) ppm = opt.MaxPixels / H;
-            int pw = Math.Max(1, (int)Math.Round(W * ppm)), ph = Math.Max(1, (int)Math.Round(H * ppm));
+            if (FW * ppm > opt.MaxPixels) ppm = opt.MaxPixels / FW;
+            if (FH * ppm > opt.MaxPixels) ppm = opt.MaxPixels / FH;
+            int pw = Math.Max(1, (int)Math.Round(FW * ppm)), ph = Math.Max(1, (int)Math.Round(FH * ppm));
             var map = new HeightMap(pw, ph);
             res.Map = map;
+
+            // the carving's own rectangle on the face (all of it, unless the piece says otherwise)
+            var area = opt.Area != null ? opt.Area.Box : new Box(0, 0, FW, FH);
+            float W = area.W, H = area.H;
+            if (opt.Area != null && opt.Area.NoBorders && spec.Borders.Any(b => b != null && b.Style != BorderStyle.None))
+            {
+                res.Diagnostics.Add(new Diagnostic(Severity.Warning, spec.Borders.First(b => b != null && b.Style != BorderStyle.None).SourceLine,
+                    "borders aren't carved on this door: its own frame is the border"));
+                spec.Borders = new BorderSpec[4];
+            }
 
             // ---- borders and field rectangle
             float minDim = Math.Min(W, H);
@@ -122,18 +146,22 @@ namespace Engraving.Core.Render
             }
             var placements = Layout.Place(resolved, field);
 
-            // the field is framed only where a border meets it; open edges continue onto the next panel
-            var framed = new[] { top, right, bottom, left };
+            // the field is framed only where a border meets it; open edges continue onto the next panel. A carving
+            // given its own rectangle is framed all round: it stops there.
+            bool inset = opt.Area != null;
+            var framed = new[] { top || inset, right || inset, bottom || inset, left || inset };
 
             // ---- per pixel
             for (int py = 0; py < ph; py++)
             {
-                float y = H - (py + 0.5f) / ppm;
+                float y = FH - (py + 0.5f) / ppm - area.Y0;
                 for (int px = 0; px < pw; px++)
                 {
-                    float x = (px + 0.5f) / ppm;
+                    float x = (px + 0.5f) / ppm - area.X0;
                     float h;
-                    if (field.Contains(x, y))
+                    if (x < 0 || y < 0 || x >= W || y >= H)
+                        h = lv.Surface;
+                    else if (field.Contains(x, y))
                         h = FieldHeight(x, y, field, framed, spec.Background, placements, lv);
                     else
                         h = BorderHeight(x, y, W, H, bw, bands, lv);

@@ -13,6 +13,8 @@ top left and top right: a star, small
 
 See [docs/LANGUAGE.md](docs/LANGUAGE.md) for the full language.
 
+![A journey frieze carved in stone](docs/images/frieze.jpg)
+
 ## Layout
 
 | folder | what |
@@ -31,8 +33,8 @@ See [docs/LANGUAGE.md](docs/LANGUAGE.md) for the full language.
 
 Carvable pieces are set in the config (`CarvablePieces`, prefab names). `engrave_inspect` in the console shows the
 hovered piece's prefab name and whether a flat face was found on each side. `engrave_reload` re-reads charge images.
-Pictures: PNGs in `Documents\ValheimHeraldryMod\Engravings` (and, optionally, Heraldry Mod's `Charges` folder beside
-it). Carvings record the exact pictures they use, so other players see the same ones: the server's `EngravingsServer`
+Pictures: PNGs in `Documents\ValheimEngraving\Engravings` (an existing `Documents\ValheimHeraldryMod\Engravings`
+from an early version keeps working; Heraldry Mod's own `Charges` pictures are used too, optionally). Carvings record the exact pictures they use, so other players see the same ones: the server's `EngravingsServer`
 pictures are fetched automatically, other players' only after `engrave_get` (`engrave_pending` lists them). Engraving
 must be installed on the server for this. Engraving doesn't depend on Heraldry Mod. See docs/LANGUAGE.md.
 

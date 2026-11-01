@@ -1,10 +1,10 @@
-﻿{
+{
   "name": "Engraving",
-  "description": "Carve procedurally generated Norse engravings into wall pieces, described in plain words.",
-  "version_number": "0.0.1",
-  "website_url": "",
+  "description": "Carve Norse engravings into your walls: knotwork, runes, Vikings and creatures in poses, your own pictures, and scenes from your own journey. Described in plain words or picked from dropdowns.",
+  "version_number": "0.1.0",
+  "website_url": "https://github.com/Hippoflotomas/Engraving-mod",
   "dependencies": [
     "denikson-BepInExPack_Valheim-5.4.2333",
-    "ValheimModding-Jotunn-2.26.1"
+    "ValheimModding-Jotunn-2.27.1"
   ]
 }

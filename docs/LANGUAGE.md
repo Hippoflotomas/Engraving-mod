@@ -97,12 +97,14 @@ each other (e.g. `center: a ring` then `center: a star, small`).
 
 **Names** are looked up in order:
 
-1. built-in shapes (below);
-2. pictures (PNG files), all under `Documents\ValheimHeraldryMod` (config `PictureRoot`), in this order:
-   the server's `EngravingsServer` folder, your `Engravings` folder, Heraldry Mod's `Charges` folder (read as plain
-   files, config `UseHeraldryCharges`; Heraldry Mod itself isn't needed), then pictures you've downloaded
-   (`EngravingsDownloaded`);
-3. the game's **item icons**, by the item's name or prefab name: `a hammer`, `two bronze axes`, `a wolf trophy`.
+1. figures (people, creatures, trees and rocks, trophies, altars: see Figures below);
+2. built-in shapes (below);
+3. pictures (PNG files), all under `Documents\ValheimEngraving` (config `PictureRoot`; an early version's
+   `Documents\ValheimHeraldryMod` is still used if your pictures are there), in this order: the server's
+   `EngravingsServer` folder, your `Engravings` folder, Heraldry Mod's `Documents\ValheimHeraldryMod\Charges` folder
+   (optional, read as plain files, config `UseHeraldryCharges`; Heraldry Mod itself isn't needed), then pictures
+   you've downloaded (`EngravingsDownloaded`);
+4. the game's **item icons**, by the item's name or prefab name: `a hammer`, `two bronze axes`.
 
 **Everyone carves the same picture.** When a carving is made, the picture each name resolved to is recorded with
 it by fingerprint (a hidden last line, `#charges: wolf=1a2b…`). A player who hasn't got that picture gets it from the
@@ -139,7 +141,7 @@ the same things, plus a `club`.
 **Poses:** `standing` (default), `walking`, `running`, `striking` (weapon raised overhead), `thrusting`, `guarding`
 (shield up, weapon ready), `triumphant` (arms raised).
 
-**Your own poses.** Poses are JSON files in `Documents\ValheimHeraldryMod\EngravingPoses` (beside `Engravings`). The
+**Your own poses.** Poses are JSON files in `<PictureRoot>\EngravingPoses` (beside `Engravings`). The
 built-in poses are written there as `builtin-poses.json.example`, with notes on every angle: copy it to a `.json`
 file, change or add poses, and run `engrave_reload`. A pose with a built-in pose's name replaces it for your new
 carvings. Each pose has a `name`, other `words` that ask for it, `lean` and `head`, and angles for `nearArm`

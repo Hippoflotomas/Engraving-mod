@@ -150,7 +150,7 @@ namespace Engraving.Carving
             float ppm = EngravingPlugin.PixelsPerMetre.Value;
             var pictures = EngravingCharges.Prepare(text, out int waiting);
             string icons = ItemIconCharges.Prepare(text, out int iconsWaiting);
-            string key = CarvingJobs.KeyFor(text, model.Width, model.Height, ppm) + "|" + side + "|" +
+            string key = CarvingJobs.KeyFor(text, model.Width, model.Height, ppm) + "|" + model.Area?.Key + "|" + side + "|" +
                          EngravingPlugin.CarveDepth.Value + "|" + EngravingPlugin.AlbedoMaxSize.Value + "|" + EngravingPlugin.KeepWallBumps.Value + "|" + CarvingTextures.TestPattern + "|" +
                          EngravingCharges.KeyOf(pictures) + "|" + icons;
             if (key == layer.Key) return;
@@ -175,7 +175,7 @@ namespace Engraving.Carving
                     layer.Status = "applying failed: " + e.Message;
                     Jotunn.Logger.LogWarning($"[Engraving] '{_prefab}': couldn't apply the carving: {e}");
                 }
-            });
+            }, model.Area);
         }
 
         void Show(Layer layer, Carving carving, CarveModel model, string key)
@@ -345,6 +345,15 @@ namespace Engraving.Carving
                 m.EnableKeyword("_NORMALMAP");
             }
             if (m.HasProperty("_BumpScale")) m.SetFloat("_BumpScale", 1f);
+            // a metal/gloss map is laid out for the piece's own UVs; on the carving's it would put the rim's shine on the
+            // panel (Hippo, 2026-11-01: the hexagonal door went reflective). Drop it: the carved face is matte.
+            if (m.HasProperty("_MetallicGlossMap") && m.GetTexture("_MetallicGlossMap") != null)
+            {
+                m.SetTexture("_MetallicGlossMap", null);
+                m.DisableKeyword("_METALLICGLOSSMAP");
+                if (m.HasProperty("_Metallic")) m.SetFloat("_Metallic", 0f);
+                if (m.HasProperty("_Glossiness")) m.SetFloat("_Glossiness", Mathf.Min(m.GetFloat("_Glossiness"), 0.2f));
+            }
             // a triplanar wall (black marble) would look the carving up by world position: lay it on the face instead
             if (CarvingTextures.TriplanarScale(m) > 0f)
             {

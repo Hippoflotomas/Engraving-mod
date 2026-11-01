@@ -25,6 +25,16 @@ namespace Engraving.Carving
             PrefabManager.OnVanillaPrefabsAvailable += Add;
         }
 
+        static ItemDrop.ItemData.SharedData _shared;
+
+        /// <summary>Durability from the config (the server's, once it has sent it); chisels share this data, so all follow.</summary>
+        internal static void ApplyDurability()
+        {
+            if (_shared == null) return;
+            _shared.m_maxDurability = EngravingPlugin.ChiselDurability.Value;
+            _shared.m_durabilityPerLevel = EngravingPlugin.ChiselDurability.Value * 0.5f;
+        }
+
         static void Add()
         {
             PrefabManager.OnVanillaPrefabsAvailable -= Add;
@@ -41,8 +51,8 @@ namespace Engraving.Carving
             };
             var item = new CustomItem(PrefabName, BasePrefab, config);
             var shared = item.ItemDrop.m_itemData.m_shared;
-            shared.m_maxDurability = EngravingPlugin.ChiselDurability.Value;
-            shared.m_durabilityPerLevel = EngravingPlugin.ChiselDurability.Value * 0.5f;
+            _shared = shared;
+            ApplyDurability();
             shared.m_useDurability = true;
             shared.m_canBeReparied = true;
             shared.m_maxQuality = 3;

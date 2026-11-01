@@ -85,9 +85,10 @@ namespace Engraving.Carving
             Request(script, w, h, ppm, null, done);
 
         /// <summary>As above; <paramref name="pictures"/> maps picture charge names to fingerprints.</summary>
-        public static void Request(string script, float w, float h, float ppm, IDictionary<string, string> pictures, Action<Carving> done)
+        public static void Request(string script, float w, float h, float ppm, IDictionary<string, string> pictures, Action<Carving> done,
+            CarveArea area = null)
         {
-            string key = KeyFor(script, w, h, ppm) + "|" + EngravingCharges.KeyOf(pictures);
+            string key = KeyFor(script, w, h, ppm) + "|" + EngravingCharges.KeyOf(pictures) + "|" + area?.Key;
             Carving cached;
             lock (Gate)
             {
@@ -110,7 +111,7 @@ namespace Engraving.Carving
                     var parsed = Parser.Parse(script);
                     carving.Diagnostics.AddRange(parsed.Diagnostics);
                     EngravingCharges.Apply(parsed.Spec, pictures);
-                    var opt = new RenderOptions { Width = w, Height = h, PixelsPerMetre = ppm };
+                    var opt = new RenderOptions { Width = w, Height = h, PixelsPerMetre = ppm, Area = area };
                     RenderResult result;
                     lock (lib ?? (object)Gate) result = EngravingRenderer.Render(parsed.Spec, lib, opt);
                     carving.Diagnostics.AddRange(result.Diagnostics);

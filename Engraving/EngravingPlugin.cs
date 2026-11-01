@@ -13,18 +13,23 @@ using Engraving.Pictures;
 using HarmonyLib;
 using Jotunn.Entities;
 using Jotunn.Managers;
+using Jotunn.Utils;
 using UnityEngine;
 
 namespace Engraving
 {
     [BepInPlugin(PluginGUID, PluginName, PluginVersion)]
     [BepInDependency(Jotunn.Main.ModGuid)]
-    //[NetworkCompatibility(CompatibilityLevel.EveryoneMustHaveMod, VersionStrictness.Minor)]
+    // players without the mod can still join (they just don't see carvings); with it, versions must match to the minor
+    // number, since the carving language and picture sharing may change between them
+    [NetworkCompatibility(CompatibilityLevel.VersionCheckOnly, VersionStrictness.Minor)]
+    // settings marked admin-only (which pieces are carvable, chisel wear) come from the server when it has the mod
+    [SynchronizationMode(AdminOnlyStrictness.IfOnServer)]
     internal class EngravingPlugin : BaseUnityPlugin
     {
         public const string PluginGUID = "com.hippoflotomas.engraving";
         public const string PluginName = "Engraving";
-        public const string PluginVersion = "0.0.1";
+        public const string PluginVersion = "0.1.0";
 
         public static EngravingPlugin Instance { get; private set; }
 
@@ -32,7 +37,7 @@ namespace Engraving
         // https://valheim-modding.github.io/Jotunn/tutorials/localization.html
         public static CustomLocalization Localization = LocalizationManager.Instance.GetLocalization();
 
-        /// <summary>Folder holding the Engravings folder (and Heraldry Mod's Charges folder, if you use it).</summary>
+        /// <summary>Folder holding the Engravings, EngravingsDownloaded, EngravingsServer and EngravingPoses folders.</summary>
         public static ConfigEntry<string> HeraldryFolder;
         public static ConfigEntry<bool> UseHeraldryCharges;
         public static ConfigEntry<string> ServerFolder;
@@ -58,10 +63,12 @@ namespace Engraving
         {
             Instance = this;
             HeraldryFolder = Config.Bind("Pictures", "PictureRoot", "",
-                "Folder holding your 'Engravings' pictures, downloads ('EngravingsDownloaded') and, if UseHeraldryCharges is on, " +
-                "Heraldry Mod's 'Charges'. Empty = Documents\\ValheimHeraldryMod (beside Heraldry Mod's own folders).");
+                "Folder holding your 'Engravings' pictures, downloads ('EngravingsDownloaded'), server pictures ('EngravingsServer') " +
+                "and poses ('EngravingPoses'). Empty = Documents\\ValheimEngraving (or Documents\\ValheimHeraldryMod, if your " +
+                "Engravings folder is already there from an early version).");
             UseHeraldryCharges = Config.Bind("Pictures", "UseHeraldryCharges", true,
-                "Also use the PNGs in Heraldry Mod's Charges folder as pictures (plain files; Engraving doesn't need Heraldry Mod).");
+                "Optional: also use the PNGs in Heraldry Mod's Charges folder (Documents\\ValheimHeraldryMod\\Charges) as pictures. " +
+                "Engraving doesn't need Heraldry Mod; if the folder isn't there this does nothing.");
             SharePictures = Config.Bind("Pictures", "SharePictures", true,
                 "Send your own pictures when other players approve fetching them for carvings they see.");
             MaxPictureKB = Config.Bind("Pictures", "MaxPictureKB", 1024,
@@ -89,14 +96,24 @@ namespace Engraving
                 "Blend the wall's own normal map (stone bumps, wood grain) into carvings, so carved stone stays rough. " +
                 "Off: carvings are smooth, and walls of different kinds share one normal map per carving (less video memory).");
             CarvablePieces = Config.Bind("Pieces", "CarvablePieces",
-                "woodwall,wood_wall_half,wood_wall_quarter,stone_wall_1x1,stone_wall_2x1,stone_wall_4x2,wood_door,wood_gate",
-                "Build pieces that can be carved (prefab names, comma separated). Hover a piece and run 'engrave_inspect' to see its name.");
+                "woodwall,wood_wall_half,wood_wall_quarter,stone_wall_1x1,stone_wall_2x1,stone_wall_4x2,piece_grausten_wall_2x2,piece_grausten_wall_4x2," +
+                "blackmarble_2x2x2,ashwood_wall_2x2,scale_wall_2x2,wood_door,wood_gate,wood_window",
+                new ConfigDescription("Build pieces that can be carved (prefab names, comma separated). Hover a piece and run " +
+                    "'engrave_inspect' to see its name. Set by the server when it has the mod.", null,
+                    new ConfigurationManagerAttributes { IsAdminOnly = true }));
             EditorMode = Config.Bind("Editor", "Mode", "basic",
                 new ConfigDescription("Which tab the carving window opens on (remembered when you switch).", new AcceptableValueList<string>("basic", "scene", "advanced")));
-            ChiselDurability = Config.Bind("Chisel", "Durability", 200f, "Chisel durability at quality 1.");
-            ChiselWearPerCarving = Config.Bind("Chisel", "WearPerCarving", 10f, "Durability a chisel loses each time you carve or recarve a piece.");
+            ChiselDurability = Config.Bind("Chisel", "Durability", 200f,
+                new ConfigDescription("Chisel durability at quality 1. Set by the server when it has the mod.", null,
+                    new ConfigurationManagerAttributes { IsAdminOnly = true }));
+            ChiselWearPerCarving = Config.Bind("Chisel", "WearPerCarving", 10f,
+                new ConfigDescription("Durability a chisel loses each time you carve or recarve a piece. Set by the server when it has the mod.", null,
+                    new ConfigurationManagerAttributes { IsAdminOnly = true }));
 
             CarvablePieces.SettingChanged += (_, __) => CarvedPiece.ReloadCarvable();
+            ChiselDurability.SettingChanged += (_, __) => Chisel.ApplyDurability();
+            // the server's values arrive after joining
+            SynchronizationManager.OnConfigurationSynchronized += (_, __) => { CarvedPiece.ReloadCarvable(); Chisel.ApplyDurability(); };
             PixelsPerMetre.SettingChanged += (_, __) => CarvedPiece.Generation++;
             CarveDepth.SettingChanged += (_, __) => CarvedPiece.Generation++;
             AlbedoMaxSize.SettingChanged += (_, __) => CarvedPiece.Generation++;
@@ -272,7 +289,7 @@ namespace Engraving
     internal class EngraveDumpCommand : ConsoleCommand
     {
         public override string Name => "engrave_dump";
-        public override string Help => "Save the hovered carved piece's textures and a report to Documents\\ValheimHeraldryMod\\EngravingDebug";
+        public override string Help => "Save the hovered carved piece's textures and a report to <PictureRoot>\\EngravingDebug";
 
         public override void Run(string[] args)
         {
