@@ -211,6 +211,7 @@ namespace Engraving.Core.Language
             new Option("Spear", "a spear"), new Option("Spear and shield", "a spear and a shield"),
             new Option("Hammer", "a hammer"), new Option("Club", "a club"), new Option("Staff", "a staff"),
             new Option("Bow", "a bow"), new Option("Pickaxe", "a pickaxe"), new Option("Shield", "a shield"),
+            new Option("Drinking horn", "a drinking horn"), new Option("Drinking horn and shield", "a drinking horn and a shield"),
             new Option("Thumbs up", "a thumbsup"), new Option("Thumbs down", "a thumbsdown"),
         };
 
@@ -221,9 +222,11 @@ namespace Engraving.Core.Language
         public static readonly Option[] SceneKinds =
         {
             new Option("War", "war"), new Option("Hunting", "hunt"), new Option("Gathering", "gathering"), new Option("Victory", "victory"),
+            new Option("Progress (building)", "progress"),
         };
 
-        public static readonly Option[] Heroes = { new Option("A Viking", "viking"), new Option("A shieldmaiden", "shieldmaiden") };
+        /// <summary>Who carves the scene: you (a Viking or shieldmaiden, as your character is), or either one named.</summary>
+        public static readonly Option[] Heroes = { new Option("You", ""), new Option("A Viking", "viking"), new Option("A shieldmaiden", "shieldmaiden") };
 
         /// <summary>The hero's weapon: the best carried (chosen when carved), each kind the player carries, or bare hands.</summary>
         public static List<Option> SceneWeapons(SceneProgress progress)
@@ -267,7 +270,8 @@ namespace Engraving.Core.Language
         public SceneKind Scene = SceneKind.War;
         /// <summary>A scene's foe, prey, material or Forsaken (null: the furthest along, chosen when carved).</summary>
         public string SceneSubject;
-        public string Hero = "viking";
+        /// <summary>The scene's hero; "" is the carver.</summary>
+        public string Hero = "";
         /// <summary>The hero's weapon kind ("sword"), "fists", or null for the best carried.</summary>
         public string SceneWeapon;
         public bool Ground = true;
@@ -348,8 +352,8 @@ namespace Engraving.Core.Language
                 var sc = new SceneSpec
                 {
                     Kind = Scene, Subject = string.IsNullOrEmpty(SceneSubject) || SceneSubject == "nothing" ? null : SceneSubject,
-                    Nothing = SceneSubject == "nothing", Hero = Hero, Ground = Ground,
-                    Weapon = Scene == SceneKind.Victory || string.IsNullOrEmpty(SceneWeapon) ? null : SceneWeapon,
+                    Nothing = SceneSubject == "nothing", Hero = Hero.Length > 0 ? Hero : "viking", HeroNamed = Hero.Length > 0, Ground = Ground,
+                    Weapon = Scene == SceneKind.Victory || Scene == SceneKind.Progress || string.IsNullOrEmpty(SceneWeapon) ? null : SceneWeapon,
                     Mode = Style == "incised" ? CarveMode.Incised : Style == "sunken" ? CarveMode.Sunken : CarveMode.Relief,
                 };
                 sb.Append(Language.Scene.Write(sc)).Append('\n');
@@ -430,6 +434,7 @@ namespace Engraving.Core.Language
             var everything = new SceneProgress();
             foreach (var t in new[] { "troll", "deer", "draugr", "lox", "eikthyr", "dragon", "queen" }) everything.Trophies.Add(t);
             foreach (var m in new[] { "copper", "iron", "obsidian" }) everything.Materials.Add(m);
+            foreach (var st in new[] { "forge", "blackforge", "artisantable", "galdrtable" }) everything.Stations.Add(st);
             everything.Weapons["sword"] = 30; everything.Weapons["bow"] = 20; everything.Weapons["pickaxe"] = 10;
             foreach (var kind in SceneKinds)
             {
@@ -440,7 +445,7 @@ namespace Engraving.Core.Language
                             yield return new BasicCarving
                             {
                                 SceneMode = true, Scene = k, SceneSubject = subject.Value.Length == 0 ? null : subject.Value,
-                                SceneWeapon = weapon.Value.Length == 0 ? null : weapon.Value, Hero = hero.Value, Ground = hero.Value == "viking",
+                                SceneWeapon = weapon.Value.Length == 0 ? null : weapon.Value, Hero = hero.Value, Ground = hero.Value != "viking",
                                 Style = Styles[(int)k % 3].Value,
                             };
             }

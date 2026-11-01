@@ -26,7 +26,19 @@ namespace Engraving.Core.Figures
             ["silver"] = new[] { "silverore" },
             ["obsidian"] = new string[0],
             ["flametal"] = new[] { "flametalore" },
+            // crafting stations, for a scene of progress (Hippo, 2026-11-01)
+            ["workbench"] = new[] { "workbenches", "bench", "craftingbench" },
+            ["forge"] = new[] { "forges", "smithy" },
+            ["cauldron"] = new[] { "cauldrons" },
+            ["stonecutter"] = new[] { "stonecutters" },
+            ["artisantable"] = new[] { "artisantables", "artisanstation", "artisan" },
+            ["blackforge"] = new[] { "blackforges" },
+            ["galdrtable"] = new[] { "galdrtables", "galdr", "magetable" },
         };
+
+        /// <summary>The crafting stations, in the order a player builds them.</summary>
+        public static readonly string[] Stations = { "workbench", "forge", "cauldron", "stonecutter", "artisantable", "blackforge", "galdrtable" };
+        public static bool IsStation(string name) => Array.IndexOf(Stations, name) >= 0;
 
         static readonly Dictionary<string, Species> ByWord = new Dictionary<string, Species>(StringComparer.OrdinalIgnoreCase);
 
@@ -70,6 +82,13 @@ namespace Engraving.Core.Figures
                 case "iron": ScrapPile(parts); break;
                 case "obsidian": Crystals(parts); break;
                 case "tin": Boulder(parts, 0.75f, 7, true); break;
+                case "workbench": Workbench(parts); break;
+                case "forge": Forge(parts, false); break;
+                case "blackforge": Forge(parts, true); break;
+                case "cauldron": Cauldron(parts); break;
+                case "stonecutter": Stonecutter(parts); break;
+                case "artisantable": ArtisanTable(parts); break;
+                case "galdrtable": GaldrTable(parts); break;
                 default: Boulder(parts, 1.15f, 3, s.Name != "rock"); break;
             }
             Geo.Ground(parts, 0, scale);
@@ -223,6 +242,115 @@ namespace Engraving.Core.Figures
                 parts.Add(new Part("crystal", (x, y) => M.Max(Sdf.Polygon(x, y, poly), -y),
                     (x, y) => Sdf.Segment(x, y, ridge0.X, ridge0.Y, ridge1.X, ridge1.Y) + (y < 0.05f ? 1 : 0)));
             }
+        }
+
+        // ---------------------------------------------------------------- crafting stations
+
+        static Part Block(string name, float cx, float cy, float hx, float hy, Func<float, float, float> lines = null) =>
+            new Part(name, (x, y) => Sdf.Box(x - cx, y - cy, hx, hy) - 0.01f, lines);
+
+        /// <summary>A plank table: top and two legs with a stretcher.</summary>
+        static void Table(List<Part> parts, float halfW, float top)
+        {
+            parts.Add(new Part("legs", (x, y) => M.Min(M.Min(Sdf.Box(x + halfW * 0.82f, y - top / 2, 0.05f, top / 2), Sdf.Box(x - halfW * 0.82f, y - top / 2, 0.05f, top / 2)),
+                                                       Sdf.Box(x, y - top * 0.3f, halfW * 0.82f, 0.035f))));
+            parts.Add(Block("top", 0, top, halfW, 0.06f, (x, y) => M.Abs(y - top)));   // the join between two planks
+        }
+
+        static void Workbench(List<Part> parts)
+        {
+            // a tool board behind the bench, with a saw and an axe cut into it
+            var saw = Geo.Poly(new[] { V(-0.45f, 1.2f), V(-0.05f, 1.32f), V(-0.05f, 1.22f), V(-0.45f, 1.12f) });
+            parts.Add(Block("board", 0, 1.25f, 0.6f, 0.3f, (x, y) =>
+            {
+                float d = M.Abs(Sdf.Polygon(x, y, saw));
+                d = M.Min(d, Sdf.Segment(x, y, 0.25f, 1.05f, 0.25f, 1.45f));
+                d = M.Min(d, M.Abs(Sdf.Polygon(x, y, Geo.Poly(new[] { V(0.25f, 1.45f), V(0.42f, 1.47f), V(0.44f, 1.33f), V(0.25f, 1.36f) }))));
+                return d;
+            }));
+            Table(parts, 0.75f, 0.85f);
+            parts.Add(Block("vise", -0.55f, 0.98f, 0.1f, 0.08f));
+        }
+
+        static void Forge(List<Part> parts, bool black)
+        {
+            float w = black ? 0.62f : 0.55f, h = black ? 1.05f : 0.9f;
+            // the chimney and hood behind, then the hearth with its stones and fire mouth, then the anvil
+            float stackTop = black ? 2.7f : 2.2f;
+            parts.Add(Block("chimney", 0, (h + stackTop) / 2, black ? 0.16f : 0.13f, (stackTop - h) / 2));
+            var hood = Geo.Poly(new[] { V(-w, h), V(-0.18f, h + 0.55f), V(0.18f, h + 0.55f), V(w, h) });
+            parts.Add(new Part("hood", (x, y) => Sdf.Polygon(x, y, hood)));
+            if (black)
+            {
+                // a dvergr kiln: a rounded dome, ringed with bands
+                parts.Add(new Part("kiln", (x, y) => M.Max(M.Len(x / w, (y - 0.0f) / h) - 1, -y) * M.Min(w, h),
+                    (x, y) => M.Min(M.Abs(Sdf.Circle(x, y - 0.38f, 0.22f)), M.Min(M.Abs(y - 0.75f), M.Abs(y - 0.25f)))));
+            }
+            else
+            {
+                parts.Add(Block("hearth", 0, h / 2, w, h / 2, (x, y) =>
+                {
+                    // courses of stone, and the arched fire mouth
+                    float row = M.Abs(M.Wrap(y, 0.22f) - 0.11f) - 0.105f;
+                    float joint = M.Abs(M.Wrap(x + (M.Floor(y / 0.22f) % 2) * 0.15f, 0.3f) - 0.15f) - 0.145f;
+                    float mouth = M.Abs(M.Min(Sdf.Box(x, y - 0.3f, 0.2f, 0.15f), Sdf.Circle(x, y - 0.45f, 0.2f)));
+                    float stones = M.Max(M.Min(M.Abs(row), M.Abs(joint)), -(M.Min(Sdf.Box(x, y - 0.3f, 0.2f, 0.15f), Sdf.Circle(x, y - 0.45f, 0.2f)) - 0.03f));
+                    return M.Min(stones, mouth);
+                }));
+            }
+            var anvil = Geo.Poly(new[] { V(0.62f, 0), V(1.08f, 0), V(1.0f, 0.12f), V(0.92f, 0.12f), V(0.92f, 0.38f), V(1.12f, 0.42f),
+                                         V(1.16f, 0.52f), V(0.72f, 0.52f), V(0.52f, 0.47f), V(0.72f, 0.40f), V(0.78f, 0.38f), V(0.78f, 0.12f), V(0.7f, 0.12f) });
+            parts.Add(new Part("anvil", (x, y) => Sdf.Polygon(x, y, anvil)));
+        }
+
+        static void Cauldron(List<Part> parts)
+        {
+            parts.Add(new Part("legs", (x, y) => M.Min(M.Min(Sdf.Segment(x, y, -0.35f, 0, -0.25f, 0.3f), Sdf.Segment(x, y, 0.35f, 0, 0.25f, 0.3f)),
+                                                       Sdf.Segment(x, y, 0, 0, 0, 0.2f)) - 0.035f));
+            parts.Add(new Part("pot", (x, y) => M.Max(M.Len(x / 0.52f, (y - 0.5f) / 0.4f) - 1, y - 0.78f) * 0.4f,
+                (x, y) => M.Abs(y - 0.5f) + (M.Abs(x) > 0.48f ? 1 : 0)));
+            parts.Add(Block("rim", 0, 0.8f, 0.5f, 0.05f));
+            parts.Add(new Part("handles", (x, y) => M.Min(M.Abs(Sdf.Circle(x + 0.55f, y - 0.62f, 0.08f)), M.Abs(Sdf.Circle(x - 0.55f, y - 0.62f, 0.08f))) - 0.022f));
+        }
+
+        static void Stonecutter(List<Part> parts)
+        {
+            parts.Add(Block("far post", -0.08f, 0.55f, 0.06f, 0.5f));
+            // a big grinding wheel on its axle
+            parts.Add(new Part("wheel", (x, y) => Sdf.Circle(x, y - 1.0f, 0.62f),
+                (x, y) => M.Min(M.Abs(Sdf.Circle(x, y - 1.0f, 0.5f)), M.Abs(Sdf.Circle(x, y - 1.0f, 0.12f)))));
+            parts.Add(Block("post", 0.08f, 0.55f, 0.06f, 0.5f));
+            parts.Add(Block("base", 0, 0.1f, 0.7f, 0.1f));
+            parts.Add(Block("block", 0.75f, 0.2f, 0.18f, 0.2f, (x, y) => Sdf.Segment(x, y, 0.62f, 0.25f, 0.85f, 0.12f)));
+        }
+
+        static void ArtisanTable(List<Part> parts)
+        {
+            // a spinning wheel on a post beside the bench
+            parts.Add(Block("wheel post", 0.85f, 0.75f, 0.05f, 0.75f));
+            parts.Add(new Part("wheel", (x, y) => Sdf.Circle(x - 0.85f, y - 1.45f, 0.48f), (x, y) =>
+            {
+                float lx = x - 0.85f, ly = y - 1.45f, d = M.Abs(Sdf.Circle(lx, ly, 0.38f));
+                for (int k = 0; k < 4; k++) { float a = k * M.Pi / 4; d = M.Min(d, Sdf.Segment(lx, ly, -M.Cos(a) * 0.38f, -M.Sin(a) * 0.38f, M.Cos(a) * 0.38f, M.Sin(a) * 0.38f)); }
+                return d;
+            }));
+            Table(parts, 0.7f, 0.85f);
+            parts.Add(new Part("tools", (x, y) => M.Min(Sdf.Circle(x + 0.35f, y - 1.0f, 0.1f), Sdf.Box(x - 0.1f, y - 0.96f, 0.16f, 0.05f))));
+        }
+
+        static void GaldrTable(List<Part> parts)
+        {
+            Table(parts, 0.6f, 0.85f);
+            // a floating rune ring with an orb inside
+            parts.Add(new Part("ring", (x, y) => M.Abs(Sdf.Circle(x, y - 1.6f, 0.38f)) - 0.06f,
+                (x, y) =>
+                {
+                    float a = (float)Math.Atan2(y - 1.6f, x);
+                    float tick = M.Abs(M.Wrap(a + M.Pi, M.Pi / 6) - M.Pi / 12) * 0.38f;
+                    return M.Max(tick, M.Abs(Sdf.Circle(x, y - 1.6f, 0.38f)) - 0.035f);
+                }));
+            parts.Add(new Part("orb", (x, y) => Sdf.Circle(x, y - 1.6f, 0.14f), (x, y) => M.Abs(Sdf.Circle(x, y - 1.6f, 0.07f))));
+            parts.Add(Block("candle", -0.4f, 1.0f, 0.04f, 0.1f));
         }
 
         // ---------------------------------------------------------------- trophies and altars

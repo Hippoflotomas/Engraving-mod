@@ -73,6 +73,8 @@ namespace Engraving.Preview
                         break;
                     case "shield": p.Shield = true; break;
                     case "forced": p.AllowForced = true; break;
+                    case "stations": foreach (var t in items) p.Stations.Add(Engraving.Core.Language.Scene.StationFor(t) ?? t); break;
+                    case "hero": p.Hero = items.FirstOrDefault(); break;
                 }
             }
             return p;

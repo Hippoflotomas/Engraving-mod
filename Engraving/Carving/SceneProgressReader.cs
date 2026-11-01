@@ -24,6 +24,13 @@ namespace Engraving.Carving
                 if (figure != null) p.Trophies.Add(figure);
                 else if (Unmatched.Add(t)) Jotunn.Logger.LogInfo($"[Engraving] No figure for trophy {t}; scenes leave it out");
             }
+            foreach (var st in player.m_knownStations.Keys)
+            {
+                var station = Scene.StationFor(st);
+                if (station != null) p.Stations.Add(station);
+            }
+            // the carver appears in their own scenes: model 1 is the female body (Hippo, 2026-11-01)
+            p.Hero = player.m_modelIndex == 1 ? "shieldmaiden" : "viking";
             foreach (var m in player.m_knownMaterial)
             {
                 var material = Scene.MaterialFor(m);

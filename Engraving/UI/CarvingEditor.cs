@@ -526,13 +526,13 @@ namespace Engraving.UI
             if (at < 0) { _basic.SceneSubject = null; at = 0; }
             int w = _weapons.FindIndex(o => o.Value == (_basic.SceneWeapon ?? ""));
             if (w < 0) { _basic.SceneWeapon = null; w = 0; }
-            _subjectLabel.text = kind == SceneKind.Gathering ? "Gathering" : kind == SceneKind.Victory ? "Over" : kind == SceneKind.Hunt ? "Hunting" : "Against";
+            _subjectLabel.text = kind == SceneKind.Gathering ? "Gathering" : kind == SceneKind.Victory ? "Over" : kind == SceneKind.Hunt ? "Hunting" : kind == SceneKind.Progress ? "Building" : "Against";
             Set(_ddSceneKind, (int)kind, true);
             Set(_ddSceneStyle, System.Array.FindIndex(BasicCarving.Styles, o => o.Value == _basic.Style), true);
             Set(_ddSubject, at, true);
-            Set(_ddHero, _basic.Hero == "shieldmaiden" ? 1 : 0, true);
-            // the victor holds nothing up but the trophy
-            Set(_ddWeapon, w, kind != SceneKind.Victory);
+            Set(_ddHero, Mathf.Max(0, System.Array.FindIndex(BasicCarving.Heroes, o => o.Value == _basic.Hero)), true);
+            // the victor holds nothing up but the trophy; a builder always has the hammer
+            Set(_ddWeapon, w, kind != SceneKind.Victory && kind != SceneKind.Progress);
             _tGround.SetIsOnWithoutNotify(_basic.Ground);
         }
 

@@ -83,6 +83,10 @@ namespace Engraving.Core.Figures
       ""nearArm"": { ""upper"": 205, ""fore"": 165, ""grip"": -75 }, ""farArm"": { ""upper"": 75, ""fore"": 85 },
       ""nearLeg"": { ""thigh"": 36, ""shin"": 4 },      ""farLeg"": { ""thigh"": -28, ""shin"": -20, ""foot"": 75 } },
 
+    { ""name"": ""toasting"",   ""words"": [""toasts"", ""cheers"", ""feasting"", ""skal"", ""drinking"", ""drinks""], ""lean"": -2, ""head"": -8,
+      ""nearArm"": { ""upper"": 118, ""fore"": 150 }, ""farArm"": { ""upper"": 8, ""fore"": 25 },
+      ""nearLeg"": { ""thigh"": 8, ""shin"": 2 },       ""farLeg"": { ""thigh"": -8, ""shin"": -5 } },
+
     { ""name"": ""judging"",    ""words"": [""judges"", ""pointing"", ""condemning"", ""approving""], ""lean"": 0, ""head"": -4,
       ""nearArm"": { ""upper"": 82, ""fore"": 92, ""grip"": 0 }, ""farArm"": { ""upper"": 18, ""fore"": 38, ""grip"": 142 },
       ""nearLeg"": { ""thigh"": 6, ""shin"": 1 },       ""farLeg"": { ""thigh"": -6, ""shin"": -4 } },

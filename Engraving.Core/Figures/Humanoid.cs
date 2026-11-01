@@ -768,7 +768,7 @@ namespace Engraving.Core.Figures
     /// <summary>Held items, drawn in the same chunky style (the game's icons wouldn't match it).</summary>
     public static class Props
     {
-        public static readonly string[] Items = { "axe", "sword", "spear", "shield", "hammer", "club", "staff", "bow", "pickaxe", "thumbsup", "thumbsdown" };
+        public static readonly string[] Items = { "axe", "sword", "spear", "shield", "hammer", "club", "staff", "bow", "pickaxe", "thumbsup", "thumbsdown", "drinkinghorn" };
 
         /// <summary>The item a word names ("axes", "battleaxe", "round-shield"), or null.</summary>
         public static string ItemFor(string word)
@@ -787,6 +787,8 @@ namespace Engraving.Core.Figures
                 case "staff": case "stave": case "wand": case "crook": return "staff";
                 case "bow": case "longbow": return "bow";
                 case "pickaxe": case "pick": case "mattock": return "pickaxe";
+                // "a drinking horn": both words name it (Hippo, 2026-11-01)
+                case "drinkinghorn": case "drinkinghorns": case "drinking": case "horn": case "horns": case "meadhorn": case "meadhorns": case "mead": case "alehorn": return "drinkinghorn";
                 // not items, but the hand does the same job: Odin's verdict (Hippo, 2026-10-30)
                 case "thumbsup": case "thumbup": return "thumbsup";
                 case "thumbsdown": case "thumbdown": return "thumbsdown";
@@ -814,6 +816,34 @@ namespace Engraving.Core.Figures
                     var fist = wrist + new Vector2(M.Sin(Rad(deg)), -M.Cos(Rad(deg))) * 0.035f;
                     var tip = fist + new Vector2(0.015f, item == "thumbsup" ? 0.15f : -0.15f);
                     return new Part("thumb", (x, y) => Sdf2.Capsule(x, y, fist, tip, 0.036f, 0.03f));
+                }
+                case "drinkinghorn":
+                {
+                    // a curved horn held mouth-up whatever the arm does, gripped just below the open end (Hippo: as
+                    // a horn is really held), its body curving down and back to the point, with a rim band
+                    var fist = wrist + new Vector2(M.Sin(Rad(deg)), -M.Cos(Rad(deg))) * 0.035f;
+                    var up = new Vector2(0, 1).Rotate(10); var side = up.Perp * -1;   // the point curls forward, clear of the arm
+                    var line = new List<Vector2>();
+                    for (int i = 0; i <= 8; i++)
+                    {
+                        float t = i / 8f;                                   // 0 = the pointed end, 1 = the mouth
+                        float a = M.Lerp(-0.5f, 0.13f, t);
+                        line.Add(fist + up * a + side * (0.22f * (1 - t) * (1 - t)));
+                    }
+                    var mouth = line[8]; var rim0 = line[7];
+                    return new Part("drinkinghorn", (x, y) =>
+                    {
+                        float d = float.MaxValue;
+                        for (int i = 0; i < 8; i++)
+                            d = M.Min(d, Sdf2.Capsule(x, y, line[i], line[i + 1], M.Lerp(0.014f, 0.085f, i / 8f), M.Lerp(0.014f, 0.085f, (i + 1) / 8f)));
+                        return d;
+                    }, (x, y) =>
+                    {
+                        // the rim band below the mouth
+                        var dir = (mouth - rim0).Normalized; var n = dir.Perp;
+                        var c = Vector2.Lerp(rim0, mouth, 0.4f);
+                        return Sdf.Segment(x, y, (c - n * 0.085f).X, (c - n * 0.085f).Y, (c + n * 0.085f).X, (c + n * 0.085f).Y);
+                    });
                 }
                 case "pickaxe":
                 {

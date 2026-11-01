@@ -190,7 +190,8 @@ with several keeps them in proportion). Names in brackets also work.
 | insect | tick, seekersoldier (soldier), queen | standing, walking, attacking |
 
 Items to hold (humanoids): `axe`, `sword`, `spear`, `hammer`, `club`, `staff`, `bow`, `pickaxe`, `shield`, and
-`thumbsup` / `thumbsdown` (a hand, not an item). More humanoid poses: aiming (a bow), throwing (a spear), judging.
+`thumbsup` / `thumbsdown` (a hand, not an item), and a `drinking horn` (held mouth-up in any pose). More humanoid
+poses: aiming (a bow), throwing (a spear), judging, toasting (`a viking toasting, holding a drinking horn`).
 
 Things that stand still: `tree` (beech), `pine`, `birch`, `oak`, `rock` (stone, boulder), `copper`, `tin`, `iron`
 (scrap pile), `silver`, `obsidian`, `flametal`; a creature's trophy (`a troll trophy`, `the trophy of the elder`)
@@ -198,8 +199,9 @@ and a Forsaken's sacrificial stone (`the altar of eikthyr`).
 
 ## Scenes
 
-`a scene of war`, `a scene of hunting`, `a scene of gathering` or `a scene of victory` fills the field with a Viking
-and a counterpart taken from your own journey, so a hallway can be carved panel by panel as you go:
+`a scene of war`, `a scene of hunting`, `a scene of gathering`, `a scene of victory` or `a scene of progress` fills the field with a Viking
+(or a shieldmaiden: the hero is whoever carves it, by their character's body) and a counterpart taken from your own
+journey, so a hallway can be carved panel by panel as you go:
 
 | scene | the Viking | opposite him |
 |---|---|---|
@@ -207,6 +209,7 @@ and a counterpart taken from your own journey, so a hallway can be carved panel 
 | hunting | shoots his bow or throws his spear, running behind | the furthest-along game animal whose trophy you've taken, fleeing |
 | gathering | swings his axe or pickaxe | the furthest-along material you know and have the tool for |
 | victory | arms raised, the trophy of the last Forsaken you beat above him | that Forsaken's sacrificial stone |
+| progress | raises a hammer | the furthest crafting station you've built: workbench, forge, cauldron, stonecutter, artisan table, black forge, galdr table |
 
 Nothing is left to chance: when you carve, the open choices are made from your trophies (every one you've ever taken,
 not what you carry), the materials you know and the weapons you carry (most damage wins; the one equipped breaks a
@@ -214,7 +217,7 @@ tie), and written into the carving: `a scene of war` is stored as `a scene of wa
 a sword and a shield`. Everyone then sees the same scene, and it doesn't change when you get better gear.
 
 You can name any part yourself: `a scene of war against a draugr`, `a scene of hunting a deer, the shieldmaiden
-holding a spear`, `a scene of gathering copper`, `a scene of victory over the elder`, `bare-handed`. Naming something
+holding a spear`, `a scene of gathering copper`, `a scene of victory over the elder`, `a scene of progress, building a black forge`, `the viking` or `the shieldmaiden` (instead of yourself), `bare-handed`. Naming something
 you haven't earned (a trophy you've never taken, a material you've never found) stops the carving. A victory before
 any Forsaken has fallen isn't an error: the Viking celebrates anyway, and Odin gives him a thumbs down.
 

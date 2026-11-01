@@ -5,7 +5,7 @@ using Engraving.Core.Figures;
 
 namespace Engraving.Core.Language
 {
-    public enum SceneKind { War, Hunt, Gathering, Victory }
+    public enum SceneKind { War, Hunt, Gathering, Victory, Progress }
 
     /// <summary>The part a charge plays in a scene.</summary>
     public enum SceneSlot { None, Hero, Foe, Above, Ground }
@@ -16,6 +16,8 @@ namespace Engraving.Core.Language
         public SceneKind Kind;
         /// <summary>The Viking (or shieldmaiden).</summary>
         public string Hero = "viking";
+        /// <summary>The text names the hero; otherwise the carver's own (a shieldmaiden for a female character) is used.</summary>
+        public bool HeroNamed;
         /// <summary>The foe, the prey, what is gathered (scenery name) or the boss beaten; null until chosen.</summary>
         public string Subject;
         /// <summary>Victory over nothing: no Forsaken beaten yet (Odin's thumbs down).</summary>
@@ -43,6 +45,10 @@ namespace Engraving.Core.Language
         /// <summary>Weapon kind ("sword", "bow", "pickaxe") to how good the best one is (damage; ties go to the last equipped).</summary>
         public Dictionary<string, float> Weapons = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
         public bool Shield;
+        /// <summary>Crafting stations the player has used ("forge").</summary>
+        public HashSet<string> Stations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        /// <summary>Who the carver is: "viking" or "shieldmaiden" (Hippo, 2026-11-01: scenes show the carver).</summary>
+        public string Hero;
         /// <summary>Whether "forced" scenes are allowed (the mod: devcommands on).</summary>
         public bool AllowForced;
     }
@@ -125,6 +131,26 @@ namespace Engraving.Core.Language
             return null;
         }
 
+        /// <summary>The station a known-station token ("$piece_forge") stands for, or null.</summary>
+        public static string StationFor(string token)
+        {
+            string n = new string((token ?? "").ToLowerInvariant().Where(char.IsLetter).ToArray());
+            if (n.StartsWith("piece")) n = n.Substring(5);
+            switch (n)
+            {
+                case "workbench": return "workbench";
+                case "forge": return "forge";
+                case "cauldron": return "cauldron";
+                case "stonecutter": return "stonecutter";
+                case "artisanstation": case "artisantable": return "artisantable";
+                case "blackforge": return "blackforge";
+                case "magetable": case "galdrtable": return "galdrtable";
+            }
+            return null;
+        }
+
+        static string StationName(string s) => s == "artisantable" ? "artisan table" : s == "blackforge" ? "black forge" : s == "galdrtable" ? "galdr table" : s;
+
         // ---------------------------------------------------------------- reading
 
         public static bool IsScene(IList<string> words) => words.Take(4).Contains("scene") || words.Take(4).Contains("scenes");
@@ -159,6 +185,8 @@ namespace Engraving.Core.Language
                         sc.Kind = SceneKind.Gathering; kindSet = true; material = material ?? "tree"; continue;
                     case "victory": case "triumph": case "glory": case "conquest":
                         sc.Kind = SceneKind.Victory; kindSet = true; continue;
+                    case "progress": case "building": case "build": case "crafting": case "craft": case "crafts":
+                        sc.Kind = SceneKind.Progress; kindSet = true; continue;
                     case "against": case "versus": case "vs": case "over": case "for": case "after":
                         afterAt = i; continue;
                     case "nothing": case "none": case "noone": case "nobody": case "naught":
@@ -181,6 +209,11 @@ namespace Engraving.Core.Language
                     else if (item != "thumbsup" && item != "thumbsdown") sc.Weapon = item;
                     continue;
                 }
+                // two-word names: "black forge", "artisan table"
+                if (i + 1 < words.Count && Catalog.Find(w + words[i + 1]) is var two && two != null && two.Rig == "scenery")
+                {
+                    material = two.Id; i++; continue;
+                }
                 var f = Catalog.Find(w);
                 if (f != null && f.Rig == "scenery") { material = f.Id; continue; }
                 if (f != null && f.Posable)
@@ -188,15 +221,18 @@ namespace Engraving.Core.Language
                     bool heroWord = f.Rig == "humanoid" && (f.Id == "viking" || f.Id == "shieldmaiden");
                     // a Viking is the hero unless he's what the scene is against ("war against a viking")
                     bool named = sc.Subject == null && afterAt >= 0 && Enumerable.Range(afterAt + 1, i - afterAt - 1).All(k => words[k] == "a" || words[k] == "an" || words[k] == "the");
-                    if (heroWord && !named) sc.Hero = f.Id;
+                    if (heroWord && !named) { sc.Hero = f.Id; sc.HeroNamed = true; }
                     else sc.Subject = f.Id;
                     continue;
                 }
                 problems.Add($"a scene doesn't know '{w}'");
             }
-            if (!kindSet) problems.Add("which scene? war, hunt, gathering or victory, e.g. 'a scene of war'");
-            if (sc.Kind == SceneKind.Gathering) sc.Subject = material ?? (sc.Subject != null && Catalog.Find(sc.Subject)?.Rig == "scenery" ? sc.Subject : null);
-            else if (material != null) problems.Add($"'{material}' is for a scene of gathering");
+            if (!kindSet) problems.Add("which scene? war, hunting, gathering, victory or progress, e.g. 'a scene of war'");
+            bool station = material != null && Scenery.IsStation(material);
+            if (sc.Kind == SceneKind.Gathering && !station) sc.Subject = material;
+            else if (sc.Kind == SceneKind.Progress && (material == null || station)) sc.Subject = material;
+            else if (material != null)
+                problems.Add(station ? $"the {StationName(material)} is for a scene of progress" : $"'{material}' is for a scene of gathering");
             if (sc.Kind == SceneKind.Victory && sc.Subject != null && !IsBoss(sc.Subject))
                 problems.Add($"a victory is over one of the Forsaken (Eikthyr, the Elder, Bonemass, Moder, Yagluth, the Queen), not '{sc.Subject}'");
             if (sc.Kind == SceneKind.Victory && sc.Nothing) sc.Subject = null;
@@ -214,16 +250,18 @@ namespace Engraving.Core.Language
                 case SceneKind.War: head = "a scene of war" + (sc.Subject != null ? " against " + Named(sc.Subject) : ""); break;
                 case SceneKind.Hunt: head = "a scene of hunting" + (sc.Subject != null ? " " + Article(sc.Subject) : ""); break;
                 case SceneKind.Gathering: head = "a scene of gathering" + (sc.Subject != null ? " " + (sc.Subject == "tree" ? "wood" : sc.Subject == "rock" ? "stone" : sc.Subject) : ""); break;
+                case SceneKind.Progress: head = "a scene of progress" + (sc.Subject != null ? ", building " + Article(StationName(sc.Subject)) : ""); break;
                 default: head = "a scene of victory" + (sc.Nothing ? " over nothing" : sc.Subject != null ? " over " + Named(sc.Subject) : ""); break;
             }
             var tail = new List<string>();
             var held = new List<string>();
             if (sc.Weapon != null && sc.Weapon != "fists") held.Add(Article(sc.Weapon));
             if (sc.Shield) held.Add("a shield");
-            string hero = "the " + sc.Hero;
-            if (held.Count > 0) tail.Add(hero + " holding " + string.Join(" and ", held));
-            else if (sc.Weapon == "fists") tail.Add(hero + " bare-handed");
-            else if (sc.Hero != "viking") tail.Add(hero);
+            // the hero is written only once chosen; until then it's whoever carves
+            string hero = sc.HeroNamed ? "the " + sc.Hero + " " : "";
+            if (held.Count > 0) tail.Add(hero + "holding " + string.Join(" and ", held));
+            else if (sc.Weapon == "fists") tail.Add(hero + "bare-handed");
+            else if (sc.HeroNamed) tail.Add(hero.TrimEnd());
             if (!sc.Ground) tail.Add("without ground");
             if (sc.Forced) tail.Add("forced");
             if (sc.Mode == CarveMode.Incised) tail.Add("incised");
@@ -281,6 +319,7 @@ namespace Engraving.Core.Language
                 return;
             }
             if (sc.Forced) problems = new List<string>();
+            if (!sc.HeroNamed && p.Hero != null) { sc.Hero = p.Hero; sc.HeroNamed = true; }
             switch (sc.Kind)
             {
                 case SceneKind.War:
@@ -323,6 +362,16 @@ namespace Engraving.Core.Language
                     else if (sc.Subject != null && !p.Trophies.Contains(sc.Subject))
                         problems.Add($"You haven't beaten {(sc.Subject == "dragon" ? "Moder" : sc.Subject)} yet.");
                     return;   // the victor holds nothing up but the trophy
+                case SceneKind.Progress:
+                    if (sc.Subject == null)
+                    {
+                        // the furthest station built; everyone has made a workbench
+                        sc.Subject = Scenery.Stations.Reverse().FirstOrDefault(p.Stations.Contains) ?? "workbench";
+                    }
+                    else if (!p.Stations.Contains(sc.Subject) && sc.Subject != "workbench")
+                        problems.Add($"You haven't built a {StationName(sc.Subject)} yet.");
+                    sc.Weapon = null;
+                    return;   // always the building hammer
             }
 
             if (sc.Weapon == null)
@@ -355,6 +404,9 @@ namespace Engraving.Core.Language
                     foreach (var m in Materials.Reverse().Where(known.Contains))
                         list.Add((m == "tree" ? "Wood" : m == "rock" ? "Stone" : m == "iron" ? "Iron (scrap)" : Cap(m), m));
                     break;
+                case SceneKind.Progress:
+                    foreach (var st in Scenery.Stations.Reverse().Where(x => x == "workbench" || p.Stations.Contains(x))) list.Add((Cap(StationName(st)), st));
+                    break;
                 case SceneKind.Victory:
                     foreach (var b in Bosses.Reverse().Where(p.Trophies.Contains)) list.Add((Title(b), b));
                     list.Add(("Nothing yet (Odin's verdict)", "nothing"));
@@ -368,7 +420,7 @@ namespace Engraving.Core.Language
         // ---------------------------------------------------------------- what it shows
 
         /// <summary>Stand-ins for a scene left open where no player is around to choose (the preview tool).</summary>
-        static string Placeholder(SceneKind k) => k == SceneKind.War ? "greydwarf" : k == SceneKind.Hunt ? "deer" : k == SceneKind.Gathering ? "tree" : null;
+        static string Placeholder(SceneKind k) => k == SceneKind.War ? "greydwarf" : k == SceneKind.Hunt ? "deer" : k == SceneKind.Gathering ? "tree" : k == SceneKind.Progress ? "workbench" : null;
 
         /// <summary>What humanoid foes fight with.</summary>
         static readonly Dictionary<string, string[]> FoeArms = new Dictionary<string, string[]>
@@ -435,6 +487,15 @@ namespace Engraving.Core.Language
                     hero.Pose = "striking";
                     var target = Charge(subject, SceneSlot.Foe);
                     target.SceneGap = Scenery.IsWood(subject) ? -0.05f : 0.05f;
+                    break;
+                }
+                case SceneKind.Progress:
+                {
+                    // building: the hammer raised over the station
+                    hero.Pose = "striking";
+                    hero.Held.Clear();
+                    hero.Held.Add("hammer");
+                    Charge(subject, SceneSlot.Foe).SceneGap = 0.05f;
                     break;
                 }
                 case SceneKind.Victory:
