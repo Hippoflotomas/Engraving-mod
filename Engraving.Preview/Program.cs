@@ -43,7 +43,7 @@ namespace Engraving.Preview
                     continue;
                 }
                 // render one of each charge (twice for plurals) and each border style once
-                string key = (b.HasCharge ? b.Charge.Label + b.Count : "") + "|" + (b.HasBorder ? b.BorderStyle + b.Width : "");
+                string key = (b.SceneMode ? "scene" + b.Scene + b.Hero : b.HasCharge ? b.Charge.Label + b.Count : "") + "|" + (b.HasBorder ? b.BorderStyle + b.Width : "");
                 if (!rendered.Add(key) || (b.HasCharge && b.Count > 2) || b.Charge.One.StartsWith("\"")) continue;
                 var result = EngravingRenderer.Render(parsed.Spec, lib, new RenderOptions { Width = 1, Height = 0.5f, PixelsPerMetre = 48 });
                 if (result.Diagnostics.Count > 0)
@@ -51,6 +51,7 @@ namespace Engraving.Preview
                     if (bad++ < 20) Console.WriteLine("RENDER:\n" + text + "\n  " + string.Join("\n  ", result.Diagnostics));
                 }
             }
+            foreach (var sample in BasicCarving.Combinations().Where((b, i) => i % 2500 == 7).Take(10)) Console.WriteLine("  e.g. " + sample.Build().Replace("\n", " / "));
             Console.WriteLine($"basic self-test: {n} combinations, {rendered.Count} rendered, {bad} problem(s)");
             return bad == 0 ? 0 : 1;
         }
@@ -71,6 +72,7 @@ namespace Engraving.Preview
                         foreach (var w in items) { var a = w.Split(':'); p.Weapons[a[0]] = a.Length > 1 ? float.Parse(a[1], System.Globalization.CultureInfo.InvariantCulture) : 1; }
                         break;
                     case "shield": p.Shield = true; break;
+                    case "forced": p.AllowForced = true; break;
                 }
             }
             return p;

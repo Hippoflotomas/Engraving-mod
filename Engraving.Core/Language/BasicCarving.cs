@@ -102,12 +102,23 @@ namespace Engraving.Core.Language
         public sealed class ChargeChoice
         {
             public string Label, One, Many;
+            /// <summary>A figure's rig ("humanoid", "quadruped"...), or null for a shape or picture.</summary>
+            public string Rig;
             public bool IsDivider => One == null;
+            public bool IsFigure => Rig != null;
             public override string ToString() => Label;
         }
 
         static ChargeChoice Shape(string label, string one, string many) => new ChargeChoice { Label = label, One = one, Many = many };
         static ChargeChoice Divider(string label) => new ChargeChoice { Label = label };
+
+        /// <summary>A figure on the menu, by its name in the catalog (the plural is the first plural word it answers to).</summary>
+        static ChargeChoice Figure(string label, string name)
+        {
+            var type = Figures.Catalog.Find(name);
+            string many = type?.Species.Words.FirstOrDefault(w => w.EndsWith("s") && Figures.Catalog.Find(w)?.Id == type.Id) ?? name;
+            return new ChargeChoice { Label = label, One = name, Many = many, Rig = type?.Rig ?? "humanoid" };
+        }
 
         public static readonly ChargeChoice NoCharge = new ChargeChoice { Label = "None", One = "", Many = "" };
 
@@ -136,6 +147,97 @@ namespace Engraving.Core.Language
             Shape("Octagon", "octagon", "octagons"),
         };
 
+        /// <summary>
+        /// The figures, in groups so no list is long (Hippo, 2026-11-01): the editor shows one group at a time, picked
+        /// from <see cref="Groups"/>. Roughly in the order a player meets them.
+        /// </summary>
+        public static readonly (string group, ChargeChoice[] figures)[] FigureGroups =
+        {
+            ("People", new[] { Figure("Viking", "viking"), Figure("Shieldmaiden", "shieldmaiden"), Figure("Odin (the wanderer)", "odin"),
+                Figure("Bog witch", "bogwitch"), Figure("Valkyrie", "valkyrie") }),
+            ("Meadows", new[] { Figure("Boar", "boar"), Figure("Deer", "deer"), Figure("Neck", "neck"), Figure("Raven", "raven"),
+                Figure("Chicken", "chicken"), Figure("Eikthyr", "eikthyr") }),
+            ("Black Forest", new[] { Figure("Greydwarf", "greydwarf"), Figure("Greydwarf brute", "greydwarfbrute"),
+                Figure("Greydwarf shaman", "greydwarfshaman"), Figure("Skeleton", "skeleton"), Figure("Troll", "troll"), Figure("Bear", "bear"),
+                Figure("Ghost", "ghost"), Figure("The Elder", "elder") }),
+            ("Ocean", new[] { Figure("Serpent", "serpent"), Figure("Seal", "seal") }),
+            ("Swamp", new[] { Figure("Blob", "blob"), Figure("Oozer", "oozer"), Figure("Leech", "leech"), Figure("Draugr", "draugr"),
+                Figure("Surtling", "surtling"), Figure("Wraith", "wraith"), Figure("Abomination", "abomination"), Figure("Bonemass", "bonemass") }),
+            ("Mountains", new[] { Figure("Wolf", "wolf"), Figure("Drake", "drake"), Figure("Bat", "bat"), Figure("Ulv", "ulv"),
+                Figure("Fenring", "fenring"), Figure("Stone golem", "golem"), Figure("Moder (dragon)", "dragon") }),
+            ("Plains", new[] { Figure("Deathsquito", "deathsquito"), Figure("Fuling", "fuling"), Figure("Fuling berserker", "berserker"),
+                Figure("Fuling shaman", "fulingshaman"), Figure("Growth", "growth"), Figure("Lox", "lox"), Figure("Lox calf", "calf"),
+                Figure("Unbjorn", "unbjorn"), Figure("Yagluth", "yagluth") }),
+            ("Mistlands", new[] { Figure("Hare", "hare"), Figure("Seeker", "seeker"), Figure("Seeker soldier", "seekersoldier"),
+                Figure("Tick", "tick"), Figure("Gjall", "gjall"), Figure("Dverger", "dverger"), Figure("The Queen", "queen") }),
+            ("Ashlands", new[] { Figure("Charred", "charred"), Figure("Morgen", "morgen"), Figure("Volture", "vulture"),
+                Figure("Fallen valkyrie", "fallenwarrior"), Figure("Bonemaw", "bonemaw"), Figure("Barka", "barka") }),
+            ("Deep North", new[] { Figure("Moose", "moose"), Figure("Jotun", "jotun"), Figure("Jotun witch", "jotunwitch") }),
+        };
+
+        public const string ShapesGroup = "Shapes", PicturesGroup = "Your pictures";
+
+        /// <summary>The first dropdown of "Carve": shapes, each group of figures, then the player's pictures.</summary>
+        public static List<string> Groups(bool pictures)
+        {
+            var g = new List<string> { ShapesGroup };
+            g.AddRange(FigureGroups.Select(f => f.group));
+            if (pictures) g.Add(PicturesGroup);
+            return g;
+        }
+
+        /// <summary>The group a charge belongs to (pictures are anything not built in).</summary>
+        public static string GroupOf(ChargeChoice c)
+        {
+            if (c == null || BuiltInCharges.Contains(c)) return ShapesGroup;
+            foreach (var (group, figures) in FigureGroups) if (figures.Contains(c)) return group;
+            return PicturesGroup;
+        }
+
+        /// <summary>A figure's poses, its rig's default first.</summary>
+        public static List<Option> PosesFor(string rig)
+        {
+            string first = Figures.PoseLibrary.NameFor("standing", rig, null) ?? "standing";
+            return Figures.PoseLibrary.All.Where(p => p.Rig == rig).Select(p => p.Name).Distinct()
+                .OrderBy(n => n == first ? 0 : 1).Select(n => new Option(Cap(n), n)).ToList();
+        }
+
+        /// <summary>What a person holds.</summary>
+        public static readonly Option[] Holdings =
+        {
+            new Option("Holding nothing", ""),
+            new Option("Axe", "an axe"), new Option("Axe and shield", "an axe and a shield"),
+            new Option("Sword", "a sword"), new Option("Sword and shield", "a sword and a shield"),
+            new Option("Spear", "a spear"), new Option("Spear and shield", "a spear and a shield"),
+            new Option("Hammer", "a hammer"), new Option("Club", "a club"), new Option("Staff", "a staff"),
+            new Option("Bow", "a bow"), new Option("Pickaxe", "a pickaxe"), new Option("Shield", "a shield"),
+            new Option("Thumbs up", "a thumbsup"), new Option("Thumbs down", "a thumbsdown"),
+        };
+
+        public static readonly Option[] Facings = { new Option("Facing right", "right"), new Option("Facing left", "left") };
+
+        // ------------------------------------------------------------------ the scene tab
+
+        public static readonly Option[] SceneKinds =
+        {
+            new Option("War", "war"), new Option("Hunting", "hunt"), new Option("Gathering", "gathering"), new Option("Victory", "victory"),
+        };
+
+        public static readonly Option[] Heroes = { new Option("A Viking", "viking"), new Option("A shieldmaiden", "shieldmaiden") };
+
+        /// <summary>The hero's weapon: the best carried (chosen when carved), each kind the player carries, or bare hands.</summary>
+        public static List<Option> SceneWeapons(SceneProgress progress)
+        {
+            var list = new List<Option> { new Option("Best you carry", "") };
+            if (progress != null)
+                foreach (var kv in progress.Weapons.OrderByDescending(k => k.Value))
+                    list.Add(new Option(Cap(kv.Key), kv.Key));
+            list.Add(new Option("Bare-handed", "fists"));
+            return list;
+        }
+
+        static string Cap(string s) => string.IsNullOrEmpty(s) ? s : char.ToUpperInvariant(s[0]) + s.Substring(1);
+
         public static ChargeChoice PicturesDivider => Divider("--- Your pictures ---");
         public static ChargeChoice ItemsDivider => Divider("--- Item icons ---");
 
@@ -157,6 +259,18 @@ namespace Engraving.Core.Language
         public ChargeChoice Charge = BuiltInCharges[2];   // a sun
         public int Count = 1;
         public string Arrangement = "grid", Position = "center", Style = "relief";
+        /// <summary>A figure's pose (null: its rig's default), what it holds ("an axe and a shield"), which way it faces.</summary>
+        public string Pose, Holding = "", Facing = "right";
+
+        /// <summary>The Scene tab is showing: the carving is background, border and one scene.</summary>
+        public bool SceneMode;
+        public SceneKind Scene = SceneKind.War;
+        /// <summary>A scene's foe, prey, material or Forsaken (null: the furthest along, chosen when carved).</summary>
+        public string SceneSubject;
+        public string Hero = "viking";
+        /// <summary>The hero's weapon kind ("sword"), "fists", or null for the best carried.</summary>
+        public string SceneWeapon;
+        public bool Ground = true;
 
         // ------------------------------------------------------------------ what's greyed out
 
@@ -166,6 +280,17 @@ namespace Engraving.Core.Language
         public bool BorderHasInscription => HasBorder && BorderStyle == "runes";
         public bool HasCharge => Charge != null && !string.IsNullOrEmpty(Charge.One);
         public bool HasArrangement => HasCharge && Count > 1;
+        public bool IsFigure => HasCharge && Charge.IsFigure;
+        public bool CanHold => IsFigure && Charge.Rig == "humanoid";
+
+        /// <summary>The scene's subject menu: the furthest along first (chosen when carved), then what the player has earned.</summary>
+        public static List<Option> SceneSubjects(SceneKind kind, SceneProgress progress)
+        {
+            string auto = kind == SceneKind.Gathering ? "Furthest you can gather" : kind == SceneKind.Victory ? "Last Forsaken beaten" : "Furthest along";
+            var list = new List<Option> { new Option(auto, "") };
+            list.AddRange(Language.Scene.Earned(kind, progress).Select(e => new Option(e.label, e.value)));
+            return list;
+        }
 
         /// <summary>Puts dependent choices back in range after a change.</summary>
         public void Tidy()
@@ -177,6 +302,9 @@ namespace Engraving.Core.Language
             if (LineCount < 1) LineCount = 1;
             if (LineCount > 4) LineCount = 4;
             if (Charge == null || Charge.IsDivider) Charge = NoCharge;
+            if (!IsFigure) { Pose = null; Holding = ""; Facing = "right"; }
+            else if (Pose != null && PosesFor(Charge.Rig).All(o => o.Value != Pose)) Pose = null;
+            if (!CanHold) Holding = "";
             if (Positions.All(p => p.Value != Position)) Position = "center";
         }
 
@@ -215,12 +343,26 @@ namespace Engraving.Core.Language
                 sb.Append('\n');
             }
 
-            if (HasCharge)
+            if (SceneMode)
+            {
+                var sc = new SceneSpec
+                {
+                    Kind = Scene, Subject = string.IsNullOrEmpty(SceneSubject) || SceneSubject == "nothing" ? null : SceneSubject,
+                    Nothing = SceneSubject == "nothing", Hero = Hero, Ground = Ground,
+                    Weapon = Scene == SceneKind.Victory || string.IsNullOrEmpty(SceneWeapon) ? null : SceneWeapon,
+                    Mode = Style == "incised" ? CarveMode.Incised : Style == "sunken" ? CarveMode.Sunken : CarveMode.Relief,
+                };
+                sb.Append(Language.Scene.Write(sc)).Append('\n');
+            }
+            else if (HasCharge)
             {
                 string noun = Count > 1 ? Charge.Many : Charge.One;
                 string count = Count > 1 ? CountWords[Count] : Article(noun);
                 sb.Append(Position).Append(": ").Append(count).Append(' ').Append(noun);
+                if (IsFigure && Pose != null && Pose != PosesFor(Charge.Rig).FirstOrDefault()?.Value) sb.Append(' ').Append(Pose);
                 if (Count > 1 && Arrangement != "grid") sb.Append(" in a ").Append(Arrangement);
+                if (CanHold && Holding.Length > 0) sb.Append(", holding ").Append(Holding);
+                if (IsFigure && Facing == "left") sb.Append(", facing left");
                 if (Style != "relief") sb.Append(", ").Append(Style);
                 sb.Append('\n');
             }
@@ -254,6 +396,16 @@ namespace Engraving.Core.Language
         public static IEnumerable<BasicCarving> Combinations(IEnumerable<ChargeChoice> extraCharges = null)
         {
             var charges = BuiltInCharges.Where(c => !c.IsDivider).Concat(extraCharges ?? Enumerable.Empty<ChargeChoice>()).ToList();
+            // figures: each one in each pose, alone and as a pair, facing each way; people with each thing to hold
+            foreach (var figure in FigureGroups.SelectMany(g => g.figures))
+                foreach (var pose in PosesFor(figure.Rig))
+                    foreach (int count in new[] { 1, 2 })
+                        foreach (var hold in figure.Rig == "humanoid" ? Holdings : Holdings.Take(1))
+                            yield return new BasicCarving
+                            {
+                                Charge = figure, Pose = pose.Value, Count = count, Holding = hold.Value, Facing = count == 2 ? "left" : "right",
+                                Arrangement = "row", Top = false, Bottom = false, Left = false, Right = false,
+                            };
             foreach (var bg in Backgrounds)
                 for (int sides = 0; sides < 16; sides++)
                     foreach (var style in BorderStyles)
@@ -274,6 +426,24 @@ namespace Engraving.Core.Language
                                     Charge = charge, Count = int.Parse(count.Value), Arrangement = arr.Value, Position = pos.Value,
                                     Style = style.Value, Top = false, Bottom = false, Left = false, Right = false,
                                 };
+            // scenes: each kind, each style, and each subject a well-travelled player could pick
+            var everything = new SceneProgress();
+            foreach (var t in new[] { "troll", "deer", "draugr", "lox", "eikthyr", "dragon", "queen" }) everything.Trophies.Add(t);
+            foreach (var m in new[] { "copper", "iron", "obsidian" }) everything.Materials.Add(m);
+            everything.Weapons["sword"] = 30; everything.Weapons["bow"] = 20; everything.Weapons["pickaxe"] = 10;
+            foreach (var kind in SceneKinds)
+            {
+                var k = (SceneKind)System.Array.IndexOf(SceneKinds, kind);
+                foreach (var subject in SceneSubjects(k, everything))
+                    foreach (var weapon in SceneWeapons(everything))
+                        foreach (var hero in Heroes)
+                            yield return new BasicCarving
+                            {
+                                SceneMode = true, Scene = k, SceneSubject = subject.Value.Length == 0 ? null : subject.Value,
+                                SceneWeapon = weapon.Value.Length == 0 ? null : weapon.Value, Hero = hero.Value, Ground = hero.Value == "viking",
+                                Style = Styles[(int)k % 3].Value,
+                            };
+            }
         }
     }
 }

@@ -16,7 +16,8 @@ namespace Engraving.Carving
         public static SceneProgress Read(Player player)
         {
             if (player == null) return null;
-            var p = new SceneProgress();
+            // "forced" test scenes only with devcommands on (an admin's in multiplayer)
+            var p = new SceneProgress { AllowForced = Terminal.m_cheat };
             foreach (var t in player.m_trophies)
             {
                 var figure = Scene.FigureForTrophy(t);

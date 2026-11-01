@@ -218,6 +218,9 @@ holding a spear`, `a scene of gathering copper`, `a scene of victory over the el
 you haven't earned (a trophy you've never taken, a material you've never found) stops the carving. A victory before
 any Forsaken has fallen isn't an error: the Viking celebrates anyway, and Odin gives him a thumbs down.
 
+For testing, `forced` (`a scene of war against a lox, forced`) skips the earned check, and an open choice with
+nothing earned falls back to a stand-in (a greydwarf, a deer). It only works with `devcommands` on.
+
 Creatures keep their true sizes against each other, shrunk where needed so the Viking isn't lost beside a dragon or a
 tree. A ground line runs across the bottom of the field, edge to edge, so a row of scene panels shares one ground;
 `without ground` leaves it off. The background, borders, `incised` / `sunken` and other charges all still apply. One
@@ -225,13 +228,23 @@ scene per carving.
 
 ## The carving window
 
-Two tabs (top right), as in Heraldry Mod. **Basic** builds a carving from dropdowns: background, which sides get a
-border (tick boxes), the border's style (with strands, line count and width where they apply, and the rune text for an
-inscription), one charge (built-in shapes, then your pictures; item icons are left out of the list, so name them in Advanced), how many and how they're arranged,
-where they go, and relief / incised / sunken. The text the choices make is shown underneath, so the words can be
-learnt. **Advanced** is the text itself, for anything more (several charge groups, overlays, rotations). Both tabs make
-the same text. Opening a piece that's already carved, or writing in Advanced, dims the Basic choices: they don't
-describe that carving, and changing one replaces it. The window opens on the tab you used last (config `Editor.Mode`).
+Three tabs (top right), as in Heraldry Mod. **Basic** and **Scene** share the first rows: background, which sides get
+a border (tick boxes), the border's style (with strands, line count and width where they apply, and the rune text for
+an inscription).
+
+**Basic** then carves one charge group. "Carve" picks a group first (shapes, people, the creatures of one biome, your
+pictures; item icons are left out, so name them in Advanced), then the charge in it; then how many and how they're
+arranged, where they go, and relief / incised / sunken. For a figure, the last row picks its pose, what a person holds,
+and which way it faces.
+
+**Scene** carves one scene: war, hunting, gathering or victory; who or what it's against (the furthest along, chosen
+when you carve, or anything you've earned); a Viking or a shieldmaiden, and what they hold (the best you carry, a kind
+of weapon you carry, or bare hands); and the ground line.
+
+The text the choices make is shown underneath, so the words can be learnt. **Advanced** is the text itself, for
+anything more (several charge groups, overlays, rotations). All three make the same text. Opening a piece that's
+already carved, or writing in Advanced, dims the dropdowns: they don't describe that carving, and changing one replaces
+it. The window opens on the tab you used last (config `Editor.Mode`).
 
 ## Sides
 

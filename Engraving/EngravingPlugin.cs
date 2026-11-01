@@ -92,7 +92,7 @@ namespace Engraving
                 "woodwall,wood_wall_half,wood_wall_quarter,stone_wall_1x1,stone_wall_2x1,stone_wall_4x2,wood_door,wood_gate",
                 "Build pieces that can be carved (prefab names, comma separated). Hover a piece and run 'engrave_inspect' to see its name.");
             EditorMode = Config.Bind("Editor", "Mode", "basic",
-                new ConfigDescription("Which tab the carving window opens on (remembered when you switch).", new AcceptableValueList<string>("basic", "advanced")));
+                new ConfigDescription("Which tab the carving window opens on (remembered when you switch).", new AcceptableValueList<string>("basic", "scene", "advanced")));
             ChiselDurability = Config.Bind("Chisel", "Durability", 200f, "Chisel durability at quality 1.");
             ChiselWearPerCarving = Config.Bind("Chisel", "WearPerCarving", 10f, "Durability a chisel loses each time you carve or recarve a piece.");
 

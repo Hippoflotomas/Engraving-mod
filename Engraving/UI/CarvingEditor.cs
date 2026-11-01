@@ -28,7 +28,7 @@ namespace Engraving.UI
         // basic mode layout: a label column, then the controls
         const float RowY = 70, RowStep = 38, RowH = 32, ColLabel = 0, ColMain = 112, ColEnd = FieldW;
         const int DropdownFont = 14;
-        const float BasicTextY = RowY + 7 * RowStep + 22, BasicTextH = 92;
+        const float BasicTextY = RowY + 8 * RowStep + 22, BasicTextH = 70;
         const float AdvancedProblemsY = FieldY + FieldH + 10, BasicProblemsY = BasicTextY + BasicTextH + 6;
         const string StaleNote = "Changing a choice replaces this carving.";
 
@@ -43,10 +43,22 @@ namespace Engraving.UI
 
         // basic mode
         GameObject _basicPanel;
-        Text _basicTab, _advancedTab;
+        Text _basicTab, _sceneTab, _advancedTab;
         bool _basicMode, _syncing;
         BasicCarving _basic = new BasicCarving();
-        readonly List<BasicCarving.ChargeChoice> _chargeChoices = new List<BasicCarving.ChargeChoice>();
+        // the charge menu shows one group at a time (shapes, people, a biome's creatures, your pictures)
+        readonly List<BasicCarving.ChargeChoice> _pictures = new List<BasicCarving.ChargeChoice>();
+        List<string> _groups = new List<string>();
+        List<BasicCarving.ChargeChoice> _shownCharges = new List<BasicCarving.ChargeChoice>();
+        string _shownGroup, _posesFor = "-";
+        List<BasicCarving.Option> _poses = new List<BasicCarving.Option>();
+        // the scene tab's menus, built from the player's progress
+        List<BasicCarving.Option> _subjects = new List<BasicCarving.Option>(), _weapons = new List<BasicCarving.Option>();
+        SceneKind? _subjectsFor;
+        GameObject _chargeRows, _sceneRows;
+        Dropdown _ddGroup, _ddPose, _ddHolding, _ddFacing, _ddSceneKind, _ddSceneStyle, _ddSubject, _ddHero, _ddWeapon;
+        Toggle _tGround;
+        Text _subjectLabel;
         Dropdown _ddBackground, _ddBorderStyle, _ddStrands, _ddLines, _ddWidth, _ddCharge, _ddCount, _ddArrangement, _ddPosition, _ddStyle;
         Toggle _tTop, _tBottom, _tLeft, _tRight;
         InputField _inscription;
@@ -162,12 +174,14 @@ namespace Engraving.UI
             // basic mode starts from its defaults each time (as Heraldry Mod's does); a carving already here dims it
             _basic = new BasicCarving();
             FillChargeList();
+            _subjectsFor = null;   // the player may have earned more since last time
             SyncBasic();
 
             _panel.SetActive(true);
             if (_unblockAfterFrame >= 0) _unblockAfterFrame = -1;
             else GUIManager.BlockInput(true);
-            SetMode(EngravingPlugin.EditorMode.Value != "advanced", false);
+            string mode = EngravingPlugin.EditorMode.Value;
+            SetMode(mode == "scene" || mode == "advanced" ? mode : "basic", false);
             if (_basicMode && _input.text.Trim().Length == 0) _input.text = _basic.Build(); // start from the default carving
             OnTextChanged();
             _renderAt = 0;
@@ -231,8 +245,9 @@ namespace Engraving.UI
 
         void BuildBasic()
         {
-            _basicTab = AddButton("Basic", PreviewX, 16, 130, 36, () => SetMode(true, true));
-            _advancedTab = AddButton("Advanced", PreviewX + 140, 16, 130, 36, () => SetMode(false, true));
+            _basicTab = AddButton("Basic", PreviewX, 16, 120, 36, () => SetMode("basic", true));
+            _sceneTab = AddButton("Scene", PreviewX + 128, 16, 120, 36, () => SetMode("scene", true));
+            _advancedTab = AddButton("Advanced", PreviewX + 256, 16, 120, 36, () => SetMode("advanced", true));
 
             _basicPanel = new GameObject("Basic", typeof(RectTransform), typeof(CanvasGroup));
             _basicPanel.transform.SetParent(_panel.transform, false);
@@ -240,24 +255,25 @@ namespace Engraving.UI
             var t = _basicPanel.transform;
 
             float Row(int r) => RowY + r * RowStep;
-            void RowLabel(int r, string text) => Label(text, LeftX + ColLabel, Row(r) + 5, ColMain - 6, RowH, 17, Beige, t);
+            Text RowLabel(Transform parent, int r, string text) => Label(text, LeftX + ColLabel, Row(r) + 5, ColMain - 6, RowH, 17, Beige, parent);
 
-            RowLabel(0, "Background");
+            // ---- shared by Basic and Scene: background and border
+            RowLabel(t, 0, "Background");
             _ddBackground = MakeDropdown(t, ColMain, Row(0), 220, BasicCarving.Backgrounds, i => _basic.Background = BasicCarving.Backgrounds[i].Value);
 
-            RowLabel(1, "Border on");
+            RowLabel(t, 1, "Border on");
             _tTop = MakeToggle(t, ColMain, Row(1), "Top", on => _basic.Top = on);
             _tBottom = MakeToggle(t, ColMain + 105, Row(1), "Bottom", on => _basic.Bottom = on);
             _tLeft = MakeToggle(t, ColMain + 225, Row(1), "Left", on => _basic.Left = on);
             _tRight = MakeToggle(t, ColMain + 320, Row(1), "Right", on => _basic.Right = on);
 
-            RowLabel(2, "Border");
+            RowLabel(t, 2, "Border");
             _ddBorderStyle = MakeDropdown(t, ColMain, Row(2), 150, BasicCarving.BorderStyles, i => _basic.BorderStyle = BasicCarving.BorderStyles[i].Value);
             _ddStrands = MakeDropdown(t, ColMain + 156, Row(2), 130, BasicCarving.Strands, i => _basic.StrandCount = int.Parse(BasicCarving.Strands[i].Value));
             _ddLines = MakeDropdown(t, ColMain + 156, Row(2), 130, BasicCarving.LineCounts, i => _basic.LineCount = int.Parse(BasicCarving.LineCounts[i].Value));
             _ddWidth = MakeDropdown(t, ColMain + 292, Row(2), ColEnd - ColMain - 292, BasicCarving.Widths, i => _basic.Width = BasicCarving.Widths[i].Value);
 
-            RowLabel(3, "Runes say");
+            RowLabel(t, 3, "Runes say");
             var ins = GUIManager.Instance.CreateInputField(t, new Vector2(0, 1), new Vector2(0, 1), Vector2.zero,
                 InputField.ContentType.Standard, "carved by my hand", 16, ColEnd - ColMain, RowH);
             Place(ins.GetComponent<RectTransform>(), LeftX + ColMain, Row(3), ColEnd - ColMain, RowH);
@@ -272,21 +288,82 @@ namespace Engraving.UI
                 Changed();
             });
 
-            RowLabel(4, "Carve");
-            _ddCharge = MakeDropdown(t, ColMain, Row(4), ColEnd - ColMain, new BasicCarving.Option[0], i =>
+            // ---- Basic: one charge group (a shape, a figure or a picture)
+            _chargeRows = Group(t, "Charge");
+            var c = _chargeRows.transform;
+            RowLabel(c, 4, "Carve");
+            _ddGroup = MakeDropdown(c, ColMain, Row(4), 150, new BasicCarving.Option[0], i =>
             {
-                if (i < 0 || i >= _chargeChoices.Count || _chargeChoices[i].IsDivider) return false;
-                _basic.Charge = _chargeChoices[i];
+                if (i < 0 || i >= _groups.Count) return false;
+                // a new group starts from its first entry
+                if (_groups[i] != BasicCarving.GroupOf(_basic.Charge)) _basic.Charge = ChargesIn(_groups[i]).FirstOrDefault(x => !x.IsDivider) ?? BasicCarving.NoCharge;
+                return true;
+            });
+            _ddCharge = MakeDropdown(c, ColMain + 156, Row(4), ColEnd - ColMain - 156, new BasicCarving.Option[0], i =>
+            {
+                if (i < 0 || i >= _shownCharges.Count || _shownCharges[i].IsDivider) return false;
+                _basic.Charge = _shownCharges[i];
                 return true;
             });
 
-            RowLabel(5, "How many");
-            _ddCount = MakeDropdown(t, ColMain, Row(5), 120, BasicCarving.Counts, i => _basic.Count = i + 1);
-            _ddArrangement = MakeDropdown(t, ColMain + 126, Row(5), 170, BasicCarving.Arrangements, i => _basic.Arrangement = BasicCarving.Arrangements[i].Value);
+            RowLabel(c, 5, "How many");
+            _ddCount = MakeDropdown(c, ColMain, Row(5), 120, BasicCarving.Counts, i => _basic.Count = i + 1);
+            _ddArrangement = MakeDropdown(c, ColMain + 126, Row(5), 170, BasicCarving.Arrangements, i => _basic.Arrangement = BasicCarving.Arrangements[i].Value);
 
-            RowLabel(6, "Where");
-            _ddPosition = MakeDropdown(t, ColMain, Row(6), 200, BasicCarving.Positions, i => _basic.Position = BasicCarving.Positions[i].Value);
-            _ddStyle = MakeDropdown(t, ColMain + 206, Row(6), ColEnd - ColMain - 206, BasicCarving.Styles, i => _basic.Style = BasicCarving.Styles[i].Value);
+            RowLabel(c, 6, "Where");
+            _ddPosition = MakeDropdown(c, ColMain, Row(6), 200, BasicCarving.Positions, i => _basic.Position = BasicCarving.Positions[i].Value);
+            _ddStyle = MakeDropdown(c, ColMain + 206, Row(6), ColEnd - ColMain - 206, BasicCarving.Styles, i => _basic.Style = BasicCarving.Styles[i].Value);
+
+            RowLabel(c, 7, "Figure");
+            _ddPose = MakeDropdown(c, ColMain, Row(7), 130, new BasicCarving.Option[0], i =>
+            {
+                if (i < 0 || i >= _poses.Count) return false;
+                _basic.Pose = i == 0 ? null : _poses[i].Value;
+                return true;
+            });
+            _ddHolding = MakeDropdown(c, ColMain + 136, Row(7), 160, BasicCarving.Holdings, i => _basic.Holding = BasicCarving.Holdings[i].Value);
+            _ddFacing = MakeDropdown(c, ColMain + 302, Row(7), ColEnd - ColMain - 302, BasicCarving.Facings, i => _basic.Facing = BasicCarving.Facings[i].Value);
+
+            // ---- Scene: a Viking and a counterpart from the player's journey
+            _sceneRows = Group(t, "Scene");
+            var sc = _sceneRows.transform;
+            RowLabel(sc, 4, "Scene of");
+            _ddSceneKind = MakeDropdown(sc, ColMain, Row(4), 200, BasicCarving.SceneKinds, i =>
+            {
+                var kind = (SceneKind)i;
+                if (kind != _basic.Scene) _basic.SceneSubject = null;   // another kind's foe doesn't carry over
+                _basic.Scene = kind;
+            });
+            _ddSceneStyle = MakeDropdown(sc, ColMain + 206, Row(4), ColEnd - ColMain - 206, BasicCarving.Styles, i => _basic.Style = BasicCarving.Styles[i].Value);
+
+            _subjectLabel = RowLabel(sc, 5, "Against");
+            _ddSubject = MakeDropdown(sc, ColMain, Row(5), ColEnd - ColMain, new BasicCarving.Option[0], i =>
+            {
+                if (i < 0 || i >= _subjects.Count) return false;
+                _basic.SceneSubject = _subjects[i].Value.Length == 0 ? null : _subjects[i].Value;
+                return true;
+            });
+
+            RowLabel(sc, 6, "Carved by");
+            _ddHero = MakeDropdown(sc, ColMain, Row(6), 200, BasicCarving.Heroes, i => _basic.Hero = BasicCarving.Heroes[i].Value);
+            _ddWeapon = MakeDropdown(sc, ColMain + 206, Row(6), ColEnd - ColMain - 206, new BasicCarving.Option[0], i =>
+            {
+                if (i < 0 || i >= _weapons.Count) return false;
+                _basic.SceneWeapon = _weapons[i].Value.Length == 0 ? null : _weapons[i].Value;
+                return true;
+            });
+
+            RowLabel(sc, 7, "Ground");
+            _tGround = MakeToggle(sc, ColMain, Row(7), "A line to stand on", on => _basic.Ground = on, 220);
+        }
+
+        /// <summary>A set of rows shown on one tab only.</summary>
+        static GameObject Group(Transform parent, string name)
+        {
+            var g = new GameObject(name, typeof(RectTransform));
+            g.transform.SetParent(parent, false);
+            Place(g.GetComponent<RectTransform>(), 0, 0, PanelW, PanelH);
+            return g;
         }
 
         /// <summary>A dropdown in the basic panel. <paramref name="set"/> stores the choice (dividers are refused).</summary>
@@ -320,13 +397,13 @@ namespace Engraving.UI
             return dd;
         }
 
-        Toggle MakeToggle(Transform parent, float x, float y, string text, System.Action<bool> set)
+        Toggle MakeToggle(Transform parent, float x, float y, string text, System.Action<bool> set, float labelW = 70)
         {
             var go = GUIManager.Instance.CreateToggle(parent, 28, 28);
             Place(go.GetComponent<RectTransform>(), LeftX + x, y + 2, 28, 28);
             var toggle = go.GetComponent<Toggle>();
             // Jötunn's toggle may bring its own (empty) label: ours sits beside the box
-            Label(text, LeftX + x + 32, y + 5, 70, RowH, 16, Color.white, parent);
+            Label(text, LeftX + x + 32, y + 5, labelW, RowH, 16, Color.white, parent);
             toggle.onValueChanged.AddListener(on =>
             {
                 if (_syncing) return;
@@ -344,21 +421,25 @@ namespace Engraving.UI
             SyncBasic();
         }
 
-        /// <summary>Built-in shapes, then your pictures (they change with the server).</summary>
+        /// <summary>Built-in shapes, the figures by group, then your pictures (they change with the server).</summary>
         void FillChargeList()
         {
-            _chargeChoices.Clear();
-            _chargeChoices.AddRange(BasicCarving.BuiltInCharges);
-            var pictures = EngravingCharges.AvailableNames();
-            if (pictures.Count > 0)
-            {
-                _chargeChoices.Add(BasicCarving.PicturesDivider);
-                foreach (var name in pictures) _chargeChoices.Add(BasicCarving.Named(name, name));
-            }
+            _pictures.Clear();
+            foreach (var name in EngravingCharges.AvailableNames()) _pictures.Add(BasicCarving.Named(name, name));
             // item icons stay out: hundreds of them made the list unusable (Hippo, 2026-10-31); Advanced can name them
-            _ddCharge.ClearOptions();
-            _ddCharge.AddOptions(_chargeChoices.Select(c => c.Label).ToList());
-            _basic.Charge = _chargeChoices.Contains(_basic.Charge) ? _basic.Charge : BasicCarving.BuiltInCharges[2];
+            _groups = BasicCarving.Groups(_pictures.Count > 0);
+            _ddGroup.ClearOptions();
+            _ddGroup.AddOptions(_groups);
+            _shownGroup = null;
+            if (BasicCarving.GroupOf(_basic.Charge) == BasicCarving.PicturesGroup && !_pictures.Contains(_basic.Charge))
+                _basic.Charge = BasicCarving.BuiltInCharges[2];
+        }
+
+        List<BasicCarving.ChargeChoice> ChargesIn(string group)
+        {
+            if (group == BasicCarving.ShapesGroup) return BasicCarving.BuiltInCharges.ToList();
+            if (group == BasicCarving.PicturesGroup) return _pictures;
+            return BasicCarving.FigureGroups.First(g => g.group == group).figures.ToList();
         }
 
         /// <summary>Shows the model's choices and greys out what doesn't apply.</summary>
@@ -383,16 +464,76 @@ namespace Engraving.UI
                 _inscription.SetTextWithoutNotify(_basic.Inscription);
                 _inscription.interactable = _basic.BorderHasInscription;
                 _inscription.GetComponent<CanvasGroup>().alpha = _basic.BorderHasInscription ? 1f : 0.35f;
-                Set(_ddCharge, Mathf.Max(0, _chargeChoices.IndexOf(_basic.Charge)), true);
-                Set(_ddCount, _basic.Count - 1, _basic.HasCharge);
-                Set(_ddArrangement, System.Array.FindIndex(BasicCarving.Arrangements, o => o.Value == _basic.Arrangement), _basic.HasArrangement);
-                Set(_ddPosition, System.Array.FindIndex(BasicCarving.Positions, o => o.Value == _basic.Position), _basic.HasCharge);
-                Set(_ddStyle, System.Array.FindIndex(BasicCarving.Styles, o => o.Value == _basic.Style), _basic.HasCharge);
+
+                _chargeRows.SetActive(!_basic.SceneMode);
+                _sceneRows.SetActive(_basic.SceneMode);
+                if (_basic.SceneMode) SyncScene();
+                else SyncCharge();
             }
             finally
             {
                 _syncing = false;
             }
+        }
+
+        void SyncCharge()
+        {
+            // the group's list, rebuilt when the group changes
+            string group = BasicCarving.GroupOf(_basic.Charge);
+            if (_shownGroup != group)
+            {
+                _shownCharges = ChargesIn(group);
+                _ddCharge.ClearOptions();
+                _ddCharge.AddOptions(_shownCharges.Select(x => x.Label).ToList());
+                _shownGroup = group;
+            }
+            Set(_ddGroup, _groups.IndexOf(group), true);
+            Set(_ddCharge, Mathf.Max(0, _shownCharges.IndexOf(_basic.Charge)), true);
+            Set(_ddCount, _basic.Count - 1, _basic.HasCharge);
+            Set(_ddArrangement, System.Array.FindIndex(BasicCarving.Arrangements, o => o.Value == _basic.Arrangement), _basic.HasArrangement);
+            Set(_ddPosition, System.Array.FindIndex(BasicCarving.Positions, o => o.Value == _basic.Position), _basic.HasCharge);
+            Set(_ddStyle, System.Array.FindIndex(BasicCarving.Styles, o => o.Value == _basic.Style), _basic.HasCharge);
+
+            // a figure's pose, what a person holds, and which way it faces
+            string rig = _basic.IsFigure ? _basic.Charge.Rig : null;
+            if (_posesFor != rig)
+            {
+                _poses = rig != null ? BasicCarving.PosesFor(rig) : new List<BasicCarving.Option> { new BasicCarving.Option("Pose", "") };
+                _ddPose.ClearOptions();
+                _ddPose.AddOptions(_poses.Select(o => o.Label).ToList());
+                _posesFor = rig;
+            }
+            Set(_ddPose, Mathf.Max(0, _poses.FindIndex(o => o.Value == _basic.Pose)), rig != null);
+            Set(_ddHolding, Mathf.Max(0, System.Array.FindIndex(BasicCarving.Holdings, o => o.Value == _basic.Holding)), _basic.CanHold);
+            Set(_ddFacing, _basic.Facing == "left" ? 1 : 0, rig != null);
+        }
+
+        void SyncScene()
+        {
+            var kind = _basic.Scene;
+            if (_subjectsFor != kind)
+            {
+                var progress = SceneProgressReader.Read(Player.m_localPlayer);
+                _subjects = BasicCarving.SceneSubjects(kind, progress);
+                _ddSubject.ClearOptions();
+                _ddSubject.AddOptions(_subjects.Select(o => o.Label).ToList());
+                _weapons = BasicCarving.SceneWeapons(progress);
+                _ddWeapon.ClearOptions();
+                _ddWeapon.AddOptions(_weapons.Select(o => o.Label).ToList());
+                _subjectsFor = kind;
+            }
+            int at = _subjects.FindIndex(o => o.Value == (_basic.SceneSubject ?? ""));
+            if (at < 0) { _basic.SceneSubject = null; at = 0; }
+            int w = _weapons.FindIndex(o => o.Value == (_basic.SceneWeapon ?? ""));
+            if (w < 0) { _basic.SceneWeapon = null; w = 0; }
+            _subjectLabel.text = kind == SceneKind.Gathering ? "Gathering" : kind == SceneKind.Victory ? "Over" : kind == SceneKind.Hunt ? "Hunting" : "Against";
+            Set(_ddSceneKind, (int)kind, true);
+            Set(_ddSceneStyle, System.Array.FindIndex(BasicCarving.Styles, o => o.Value == _basic.Style), true);
+            Set(_ddSubject, at, true);
+            Set(_ddHero, _basic.Hero == "shieldmaiden" ? 1 : 0, true);
+            // the victor holds nothing up but the trophy
+            Set(_ddWeapon, w, kind != SceneKind.Victory);
+            _tGround.SetIsOnWithoutNotify(_basic.Ground);
         }
 
         /// <summary>
@@ -417,18 +558,25 @@ namespace Engraving.UI
         }
 
         /// <summary>
-        /// Basic: the dropdowns, with the carving text they make shown read-only underneath (so it teaches the
-        /// words). Advanced: the text box, editable.
+        /// Basic and Scene: the dropdowns, with the carving text they make shown read-only underneath (so it teaches the
+        /// words). Advanced: the text box, editable. All three make the same kind of text.
         /// </summary>
-        void SetMode(bool basicOn, bool remember)
+        void SetMode(string mode, bool remember)
         {
-            _basicMode = basicOn;
-            if (remember) EngravingPlugin.EditorMode.Value = basicOn ? "basic" : "advanced";
-            _basicPanel.SetActive(basicOn);
-            _scriptLabel.gameObject.SetActive(basicOn);
-            _input.readOnly = basicOn;
-            if (basicOn)
+            bool dropdowns = mode != "advanced";
+            if (remember) EngravingPlugin.EditorMode.Value = mode;
+            // between Basic and Scene, a carving the dropdowns made is remade for the other tab
+            string current = (_input.text ?? "").Trim();
+            bool fromDropdowns = current.Length == 0 || current == _basic.Build();
+            _basic.SceneMode = mode == "scene";
+            _basicMode = dropdowns;
+            _basicPanel.SetActive(dropdowns);
+            _scriptLabel.gameObject.SetActive(dropdowns);
+            _input.readOnly = dropdowns;
+            if (dropdowns)
             {
+                SyncBasic();
+                if (fromDropdowns) _input.text = _basic.Build();
                 Place(_fieldRect, LeftX, BasicTextY, FieldW, BasicTextH);
                 Place(_problems.rectTransform, LeftX, BasicProblemsY, FieldW, PanelH - 112 - BasicProblemsY);
                 _input.DeactivateInputField();
@@ -442,8 +590,10 @@ namespace Engraving.UI
                 _input.ActivateInputField();
                 _input.MoveTextEnd(false);
             }
-            _basicTab.color = basicOn ? GUIManager.Instance.ValheimOrange : Color.white;
-            _advancedTab.color = basicOn ? Color.white : GUIManager.Instance.ValheimOrange;
+            var on = GUIManager.Instance.ValheimOrange;
+            _basicTab.color = mode == "basic" ? on : Color.white;
+            _sceneTab.color = mode == "scene" ? on : Color.white;
+            _advancedTab.color = mode == "advanced" ? on : Color.white;
         }
 
         // ================================================================== per frame

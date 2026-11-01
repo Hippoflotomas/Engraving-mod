@@ -24,6 +24,8 @@ namespace Engraving.Core.Language
         public string Weapon;
         public bool Shield;
         public bool Ground = true;
+        /// <summary>For testing: show things the carver hasn't earned (only with devcommands on).</summary>
+        public bool Forced;
         public CarveMode Mode = CarveMode.Relief;
         public int SourceLine;
     }
@@ -41,6 +43,8 @@ namespace Engraving.Core.Language
         /// <summary>Weapon kind ("sword", "bow", "pickaxe") to how good the best one is (damage; ties go to the last equipped).</summary>
         public Dictionary<string, float> Weapons = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
         public bool Shield;
+        /// <summary>Whether "forced" scenes are allowed (the mod: devcommands on).</summary>
+        public bool AllowForced;
     }
 
     /// <summary>
@@ -135,7 +139,8 @@ namespace Engraving.Core.Language
         public static SceneSpec Read(IList<string> words, int line, List<string> problems)
         {
             var sc = new SceneSpec { SourceLine = line };
-            bool kindSet = false, after = false;
+            bool kindSet = false;
+            int afterAt = -9;   // where the last 'against' / 'over' / 'for' was
             string material = null;
             for (int i = 0; i < words.Count; i++)
             {
@@ -143,25 +148,26 @@ namespace Engraving.Core.Language
                 switch (w)
                 {
                     case "war": case "battle": case "fight": case "fighting": case "combat": case "duel": case "slaying":
-                        sc.Kind = SceneKind.War; kindSet = true; after = true; continue;
+                        sc.Kind = SceneKind.War; kindSet = true; continue;
                     case "hunt": case "hunting": case "chase": case "chasing": case "hunter":
-                        sc.Kind = SceneKind.Hunt; kindSet = true; after = true; continue;
+                        sc.Kind = SceneKind.Hunt; kindSet = true; continue;
                     case "gathering": case "gather": case "harvest": case "harvesting": case "labour": case "labor": case "work":
-                        sc.Kind = SceneKind.Gathering; kindSet = true; after = true; continue;
+                        sc.Kind = SceneKind.Gathering; kindSet = true; continue;
                     case "mining": case "mine":
-                        sc.Kind = SceneKind.Gathering; kindSet = true; after = true; material = material ?? "rock"; continue;
+                        sc.Kind = SceneKind.Gathering; kindSet = true; material = material ?? "rock"; continue;
                     case "chopping": case "woodcutting": case "felling": case "logging": case "lumberjacking":
-                        sc.Kind = SceneKind.Gathering; kindSet = true; after = true; material = material ?? "tree"; continue;
+                        sc.Kind = SceneKind.Gathering; kindSet = true; material = material ?? "tree"; continue;
                     case "victory": case "triumph": case "glory": case "conquest":
-                        sc.Kind = SceneKind.Victory; kindSet = true; after = true; continue;
+                        sc.Kind = SceneKind.Victory; kindSet = true; continue;
                     case "against": case "versus": case "vs": case "over": case "for": case "after":
-                        after = true; continue;
+                        afterAt = i; continue;
                     case "nothing": case "none": case "noone": case "nobody": case "naught":
                         sc.Nothing = true; continue;
                     case "without": case "no":
                         if (i + 1 < words.Count && words[i + 1] == "ground") { sc.Ground = false; i++; }
                         continue;
                     case "ground": sc.Ground = true; continue;
+                    case "forced": case "force": sc.Forced = true; continue;
                     case "bare-handed": case "barehanded": case "unarmed": case "fists": case "fist": sc.Weapon = "fists"; continue;
                     case "relief": case "raised": case "embossed": sc.Mode = CarveMode.Relief; continue;
                     case "incised": case "outlined": case "outline": case "engraved": case "lined": sc.Mode = CarveMode.Incised; continue;
@@ -180,7 +186,9 @@ namespace Engraving.Core.Language
                 if (f != null && f.Posable)
                 {
                     bool heroWord = f.Rig == "humanoid" && (f.Id == "viking" || f.Id == "shieldmaiden");
-                    if (heroWord && (!after || sc.Subject != null)) sc.Hero = f.Id;
+                    // a Viking is the hero unless he's what the scene is against ("war against a viking")
+                    bool named = sc.Subject == null && afterAt >= 0 && Enumerable.Range(afterAt + 1, i - afterAt - 1).All(k => words[k] == "a" || words[k] == "an" || words[k] == "the");
+                    if (heroWord && !named) sc.Hero = f.Id;
                     else sc.Subject = f.Id;
                     continue;
                 }
@@ -217,6 +225,7 @@ namespace Engraving.Core.Language
             else if (sc.Weapon == "fists") tail.Add(hero + " bare-handed");
             else if (sc.Hero != "viking") tail.Add(hero);
             if (!sc.Ground) tail.Add("without ground");
+            if (sc.Forced) tail.Add("forced");
             if (sc.Mode == CarveMode.Incised) tail.Add("incised");
             if (sc.Mode == CarveMode.Sunken) tail.Add("sunken");
             return head + (tail.Count > 0 ? ", " + string.Join(", ", tail) : "");
@@ -265,6 +274,13 @@ namespace Engraving.Core.Language
         static void Choose(SceneSpec sc, SceneProgress p, List<string> problems)
         {
             string Best(IEnumerable<string> pool) => pool.OrderByDescending(Rank).FirstOrDefault();
+            // "forced" (testing, devcommands only): nothing needs earning; open choices fall back to stand-ins
+            if (sc.Forced && !p.AllowForced)
+            {
+                problems.Add("'forced' scenes are for testing: turn on devcommands first.");
+                return;
+            }
+            if (sc.Forced) problems = new List<string>();
             switch (sc.Kind)
             {
                 case SceneKind.War:
@@ -274,7 +290,7 @@ namespace Engraving.Core.Language
                     if (sc.Subject == null)
                     {
                         var pool = p.Trophies.Where(t => Rank(t) >= 0 && !IsBoss(t) && Game.Contains(t) == hunt);
-                        sc.Subject = Best(pool);
+                        sc.Subject = Best(pool) ?? (sc.Forced ? Placeholder(sc.Kind) : null);
                         if (sc.Subject == null)
                             problems.Add(hunt ? "No prey yet: take a trophy from a deer, a boar or the like first."
                                               : "No foes yet: take a trophy from something you've fought first.");
@@ -319,6 +335,35 @@ namespace Engraving.Core.Language
             }
             if (sc.Kind == SceneKind.War && p.Shield && sc.Weapon != "bow" && sc.Weapon != "staff") sc.Shield = true;
         }
+
+        /// <summary>What a player could name in a scene of this kind, furthest along first: (label, name in the text).</summary>
+        public static List<(string label, string value)> Earned(SceneKind kind, SceneProgress p)
+        {
+            var list = new List<(string, string)>();
+            if (p == null) return list;
+            string Title(string n) => n == "dragon" ? "Moder" : n == "elder" || n == "queen" ? "The " + Cap(n) : Cap(n);
+            switch (kind)
+            {
+                case SceneKind.War:
+                case SceneKind.Hunt:
+                    foreach (var t in p.Trophies.Where(t => Rank(t) >= 0 && !IsBoss(t) && Game.Contains(t) == (kind == SceneKind.Hunt)).OrderByDescending(Rank))
+                        list.Add((Title(t), t));
+                    break;
+                case SceneKind.Gathering:
+                    var known = new HashSet<string>(p.Materials) { "tree", "rock" };
+                    if (known.Contains("birch")) known.Add("oak");
+                    foreach (var m in Materials.Reverse().Where(known.Contains))
+                        list.Add((m == "tree" ? "Wood" : m == "rock" ? "Stone" : m == "iron" ? "Iron (scrap)" : Cap(m), m));
+                    break;
+                case SceneKind.Victory:
+                    foreach (var b in Bosses.Reverse().Where(p.Trophies.Contains)) list.Add((Title(b), b));
+                    list.Add(("Nothing yet (Odin's verdict)", "nothing"));
+                    break;
+            }
+            return list;
+        }
+
+        static string Cap(string s) => s.Length == 0 ? s : char.ToUpperInvariant(s[0]) + s.Substring(1);
 
         // ---------------------------------------------------------------- what it shows
 
